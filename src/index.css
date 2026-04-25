@@ -1,0 +1,45 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  color: #1f2937;
+  background: #ffffff;
+}
+
+.gantt-host .bar-wrapper.gantt-milestone .bar {
+  /* Without transform-box: fill-box the SVG default is view-box, which rotates
+     the rect around the entire SVG's centre and flings it to the wrong row/day. */
+  transform: rotate(45deg);
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+/* The progress stripe and resize handles render as axis-aligned rects on top of
+   the diamond; hide them for milestones so only the diamond is visible. */
+.gantt-host .bar-wrapper.gantt-milestone .bar-progress,
+.gantt-host .bar-wrapper.gantt-milestone .handle,
+.gantt-host .bar-wrapper.gantt-milestone .bar-label {
+  display: none;
+}
+
+.gantt-host .bar-wrapper.gantt-group .bar {
+  fill: #6b7280;
+}
+
+/* Dependency arrows: faded by default, fully visible when the selected item is
+   one of their endpoints. The highlight class is toggled by GanttChart.tsx. */
+.gantt-host .arrow path {
+  opacity: 0.15;
+  transition: opacity 120ms ease-in-out;
+}
+
+.gantt-host .arrow path.arrow-highlighted {
+  opacity: 1;
+}

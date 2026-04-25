@@ -1,0 +1,343 @@
+import Gantt, { type GanttTaskInput } from 'frappe-gantt'
+import { useEffect, useRef } from 'react'
+import { aggregatedView } from '@/domain/aggregation'
+import { diffWorkingDays, isWorkingDay, toISO } from '@/domain/calendar'
+import { findItem, flatten } from '@/domain/tree'
+import { isoDate, type Project } from '@/domain/types'
+import { usePlanningStore } from '@/store/planningStore'
+
+interface GanttChartProps {
+  project: Project
+  onItemClick?: (id: string) => void
+  onItemDoubleClick?: (id: string) => void
+}
+
+function toGanttTasks(project: Project): GanttTaskInput[] {
+  const view = aggregatedView(project)
+  const depsBySucc = new Map<string, string[]>()
+  for (const d of project.dependencies) {
+    if (!depsBySucc.has(d.successorId)) depsBySucc.set(d.successorId, [])
+    depsBySucc.get(d.successorId)!.push(d.predecessorId)
+  }
+  const tasks: GanttTaskInput[] = []
+  for (const item of flatten(project.items)) {
+    const b = view.get(item.id)
+    if (!b) continue
+    const preds = depsBySucc.get(item.id) ?? []
+    const custom =
+      item.type === 'milestone' ? 'gantt-milestone' :
+      item.type === 'group' ? 'gantt-group' : 'gantt-task'
+    tasks.push({
+      id: item.id,
+      name: item.name || '(unnamed)',
+      start: b.startDate,
+      end: b.endDate,
+      progress: 0,
+      dependencies: preds.join(','),
+      custom_class: custom,
+    })
+  }
+  return tasks
+}
+
+export function GanttChart({ project, onItemClick, onItemDoubleClick }: GanttChartProps) {
+  const hostRef = useRef<HTMLDivElement>(null)
+  const ganttRef = useRef<Gantt | null>(null)
+  const clickRef = useRef(onItemClick)
+  clickRef.current = onItemClick
+  const dblClickRef = useRef(onItemDoubleClick)
+  dblClickRef.current = onItemDoubleClick
+  const selectedItemId = usePlanningStore((s) => s.selectedItemId)
+  const hoveredItemId = usePlanningStore((s) => s.hoveredItemId)
+  const setHoveredItem = usePlanningStore((s) => s.setHoveredItem)
+  // The id of the bar the user pressed down on. Used to ignore the cascaded
+  // date_change events that frappe-gantt emits for dependent bars it shifted
+  // along — only the bar actually grabbed by the user should push an edit.
+  const draggedIdRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    if (!hostRef.current) return
+    const tasks = toGanttTasks(project)
+    if (tasks.length === 0) {
+      hostRef.current.innerHTML = ''
+      ganttRef.current = null
+      return
+    }
+    if (!ganttRef.current) {
+      ganttRef.current = new Gantt(hostRef.current, tasks, {
+        view_mode: 'Day',
+        bar_height: 18,
+        padding: 14,
+        on_click: (t) => clickRef.current?.(t.id),
+        on_date_change: (task, start, end) => {
+          handleBarDateChange(task.id, start, end, draggedIdRef.current, ganttRef.current)
+        },
+      })
+      // frappe-gantt's built-in get_snap_position rounds asymmetrically: JS `%`
+      // on a negative dx yields a negative rem that's always < column_width/2,
+      // so dragging the right handle left always snaps *toward zero shrink*
+      // (needing a full extra column of drag to advance one snap step). This
+      // makes shrinking from N MD to 1 MD land on 2 MD unless the user drags
+      // well past the 1-column mark. Replace with a symmetric nearest-column
+      // snap; safe because we only ever use view_mode: 'Day'.
+      ;(ganttRef.current as unknown as { get_snap_position(dx: number): number }).get_snap_position =
+        function (dx: number) {
+          const col = (this as unknown as { options: { column_width: number } }).options.column_width
+          return Math.round(dx / col) * col
+        }
+    } else {
+      ganttRef.current.refresh(tasks)
+    }
+    syncSvgWidth(hostRef.current)
+    shadeNonWorkingDays(hostRef.current, project, ganttRef.current)
+  }, [project])
+
+  // Re-apply arrow highlighting when either the hovered or click-selected item
+  // changes. Hover wins when present, falling back to the sticky selection.
+  useEffect(() => {
+    if (!hostRef.current) return
+    highlightSelectedArrows(hostRef.current, hoveredItemId ?? selectedItemId)
+  }, [project, hoveredItemId, selectedItemId])
+
+  // Delegated hover on the bar layer: frappe-gantt stamps `data-id` on every
+  // <g class="bar-wrapper">. We track enter/leave via pointer events on the
+  // host and walk to the nearest ancestor with data-id. The same listener
+  // captures pointerdown so we know which bar the user grabbed for a drag —
+  // on_date_change fires for every cascaded bar, not just the grabbed one.
+  useEffect(() => {
+    const host = hostRef.current
+    if (!host) return
+    const findBarId = (target: EventTarget | null): string | null => {
+      if (!(target instanceof Element)) return null
+      const wrapper = target.closest('.bar-wrapper[data-id]')
+      return wrapper ? wrapper.getAttribute('data-id') : null
+    }
+    const onOver = (e: PointerEvent) => {
+      const id = findBarId(e.target)
+      if (id) setHoveredItem(id)
+    }
+    const onOut = (e: PointerEvent) => {
+      // Only clear when leaving the bar (entering an unrelated element).
+      const from = findBarId(e.target)
+      const to = findBarId(e.relatedTarget)
+      if (from && from !== to) setHoveredItem(null)
+    }
+    const onDown = (e: PointerEvent) => {
+      draggedIdRef.current = findBarId(e.target)
+    }
+    const onDblClick = (e: MouseEvent) => {
+      const id = findBarId(e.target)
+      if (id) dblClickRef.current?.(id)
+    }
+    host.addEventListener('pointerover', onOver)
+    host.addEventListener('pointerout', onOut)
+    host.addEventListener('pointerdown', onDown)
+    host.addEventListener('dblclick', onDblClick)
+    return () => {
+      host.removeEventListener('pointerover', onOver)
+      host.removeEventListener('pointerout', onOut)
+      host.removeEventListener('pointerdown', onDown)
+      host.removeEventListener('dblclick', onDblClick)
+    }
+  }, [setHoveredItem])
+
+  return (
+    <div className="gantt-host overflow-auto h-full">
+      <div ref={hostRef} />
+    </div>
+  )
+}
+
+/**
+ * Snap a Date to the nearest midnight and return it as an ISO date.
+ *
+ * frappe-gantt places bars at an x-offset computed from
+ * `date_utils.diff(task_start, gantt_start, 'hour')` (see
+ * node_modules/frappe-gantt/src/bar.js `compute_x`). That `diff` takes
+ * `Math.floor(milliseconds / 3_600_000)`, so if a DST transition falls
+ * between `gantt_start` and the task, the hour count is short by 1, which
+ * makes the stored `x` fractional. On drag release, `compute_start_end_date`
+ * inverts that math and hands back a start time of 23:00 the previous day
+ * (or 01:00 the same day, depending on DST direction). `toISO` then formats
+ * that as the wrong calendar date, which `diffWorkingDays` interprets as
+ * +1 MD.
+ *
+ * Bars always live on whole-day column boundaries, so the right answer is to
+ * round the fractional time to the nearest midnight. Hour ≥ 12 rounds up,
+ * else down — this handles DST drift in either direction.
+ */
+function snapDateToNearestDay(d: Date): ReturnType<typeof toISO> {
+  const snapped = new Date(d)
+  if (snapped.getHours() >= 12) {
+    snapped.setDate(snapped.getDate() + 1)
+  }
+  snapped.setHours(0, 0, 0, 0)
+  return toISO(snapped)
+}
+
+/**
+ * Translate a frappe-gantt drag/resize event into a domain-level edit.
+ *
+ * frappe-gantt emits `date_change` for every bar it shifted — including the
+ * dependents it auto-moved to satisfy the predecessor's new dates. We only
+ * want to persist the edit on the bar the user actually grabbed (identified
+ * by `draggedId`), otherwise the cascaded events fight our own reschedule
+ * logic. The dependent movements are recomputed authoritatively by
+ * `applyWithReschedule` in the store once the grabbed task's update lands.
+ *
+ * Non-task items (groups, milestones) aren't user-editable via the Gantt:
+ * groups are aggregated, milestones are zero-duration with a separate edit
+ * flow. When the user drags one, we snap the bar back to the authoritative
+ * project state via `refresh()`.
+ */
+function handleBarDateChange(
+  taskId: string,
+  start: Date,
+  end: Date,
+  draggedId: string | null,
+  gantt: Gantt | null,
+): void {
+  if (draggedId !== null && draggedId !== taskId) return
+  const state = usePlanningStore.getState()
+  const item = findItem(state.project.items, taskId)
+  if (!item) return
+  if (item.type !== 'task') {
+    // Snap back. refresh() is synchronous; queueing avoids recursing inside
+    // frappe-gantt's mouseup handler which is still finishing up.
+    if (gantt) queueMicrotask(() => gantt.refresh(toGanttTasks(state.project)))
+    return
+  }
+  const newStartISO = snapDateToNearestDay(start)
+  const newEndISO = toISO(end)
+  const estimationMD = Math.max(1, diffWorkingDays(newStartISO, newEndISO, state.project.calendar))
+  if (newStartISO === item.startDate && estimationMD === item.estimationMD) {
+    // The drag was a semantic no-op — e.g. the user dragged the right edge
+    // across weekend columns, which all collapse to the same working-day
+    // count. frappe-gantt has already moved the bar to the drop position, so
+    // without a refresh it stays visually displaced from the canonical state.
+    // Snap it back.
+    if (gantt) queueMicrotask(() => gantt.refresh(toGanttTasks(state.project)))
+    return
+  }
+  state.updateItem(taskId, { startDate: newStartISO, estimationMD })
+}
+
+/**
+ * Dim all dependency arrows by default; fully highlight the ones connected to
+ * the currently selected item (either as predecessor or successor). The arrow
+ * paths live inside `<g class="arrow">` and carry `data-from` / `data-to`
+ * attributes set by frappe-gantt — see node_modules/frappe-gantt/src/arrow.js.
+ */
+function highlightSelectedArrows(host: HTMLElement, selectedId: string | null) {
+  const arrows = host.querySelectorAll<SVGPathElement>('svg .arrow path')
+  arrows.forEach((path) => {
+    const from = path.getAttribute('data-from')
+    const to = path.getAttribute('data-to')
+    const connected = selectedId !== null && (from === selectedId || to === selectedId)
+    path.classList.toggle('arrow-highlighted', connected)
+  })
+}
+
+/**
+ * frappe-gantt's `set_width()` only grows the SVG (see node_modules/frappe-gantt
+ * /src/index.js line ~617: `if (cur_width < actual_width) { ... }`). When the
+ * project shrinks — e.g. after a task estimation decrease contracts the project
+ * end — the SVG keeps its old larger width, leaving trailing empty columns that
+ * make the timeline look wrong. Sync the SVG width to the actual grid content
+ * width after every refresh so both grow and shrink reliably.
+ */
+function syncSvgWidth(host: HTMLElement) {
+  const svg = host.querySelector<SVGSVGElement>('svg')
+  if (!svg) return
+  const gridRow = svg.querySelector<SVGRectElement>('.grid .grid-row')
+  if (!gridRow) return
+  const gridWidth = Number(gridRow.getAttribute('width') ?? 0)
+  if (!gridWidth) return
+  svg.setAttribute('width', String(gridWidth))
+}
+
+function shadeNonWorkingDays(host: HTMLElement, project: Project, gantt: Gantt | null) {
+  // frappe-gantt renders <rect class="grid-row"> and header dates. Non-working days are
+  // approximated by adding vertical tint rects aligned with day columns.
+  const svg = host.querySelector('svg')
+  if (!svg) return
+  // Remove prior overlays
+  svg.querySelectorAll('.non-working-overlay').forEach((n) => n.remove())
+
+  const headerDates = svg.querySelectorAll<SVGTextElement>('.lower-text')
+  const firstRow = svg.querySelector<SVGRectElement>('.grid-row')
+  if (!firstRow) return
+  const gridHeight = Number(svg.querySelector<SVGGElement>('.grid')?.getAttribute('data-height') ?? 0) ||
+    Number(svg.getAttribute('height') ?? 0)
+
+  // Build y + height from grid background, but skip the grid-header strip so
+  // the white header rect doesn't paint over our shading.
+  const bg = svg.querySelector<SVGRectElement>('.grid-background')
+  const header = svg.querySelector<SVGRectElement>('.grid-header')
+  const headerH = header ? Number(header.getAttribute('height') ?? 0) : 0
+  const bgY = bg ? Number(bg.getAttribute('y') ?? 0) : 0
+  const bgH = bg ? Number(bg.getAttribute('height') ?? gridHeight) : gridHeight
+  const yBase = bgY + headerH
+  const h = Math.max(0, bgH - headerH)
+
+  headerDates.forEach((text) => {
+    const x = Number(text.getAttribute('x') ?? 0)
+    const dateAttr = text.textContent?.trim() ?? ''
+    // lower-text is like "1" or "Mon" depending on mode — we use Day mode, so it's day-of-month.
+    // We instead infer the date from a sibling rect, if possible. For simplicity, skip precise mapping.
+    // Use a per-column approach: check computed iso from column index instead.
+    void x
+    void dateAttr
+  })
+
+  // Iterate grid columns and infer date by index from first day.
+  // frappe-gantt renders ticks as <path d="M <x> <y> v <h>"> in Day mode.
+  // We parse x out of either a path's `d` attribute or a line's `x1` attribute.
+  const ticks = svg.querySelectorAll<SVGGraphicsElement>('.tick')
+  if (ticks.length < 2) return
+  const tickX = (el: Element): number => {
+    const x1 = el.getAttribute('x1')
+    if (x1 != null) return Number(x1)
+    const d = el.getAttribute('d') ?? ''
+    // Match "M <x> <y> ..." — x is the first numeric token after M.
+    const m = d.match(/M\s*(-?\d+(?:\.\d+)?)/)
+    return m ? Number(m[1]) : 0
+  }
+  const firstTickX = tickX(ticks[0]!)
+  const columnWidth = tickX(ticks[1]!) - firstTickX
+  if (columnWidth <= 0) return
+  // Anchor column 0 to the Gantt instance's internal start date. frappe-gantt
+  // pads a week or two before the first task, so the project's min date is not
+  // column 0 — reading it off the instance is the only reliable source.
+  const ganttStart = (gantt as unknown as { gantt_start?: Date } | null)?.gantt_start
+  if (!ganttStart) return
+  const totalCols = ticks.length
+  const startMs = new Date(ganttStart.getFullYear(), ganttStart.getMonth(), ganttStart.getDate()).getTime()
+
+  const ns = 'http://www.w3.org/2000/svg'
+  const gridEl = svg.querySelector('.grid')
+  // Insert overlays after the grid-header rect so that the header's own white
+  // fill doesn't paint over them; tick lines and bars still render on top
+  // because they appear later in the DOM.
+  const anchor = gridEl?.querySelector('.grid-header')?.nextSibling ?? null
+  for (let i = 0; i < totalCols; i++) {
+    const dayMs = startMs + i * 24 * 60 * 60 * 1000
+    const d = new Date(dayMs)
+    // Build ISO from local parts to avoid UTC offset rolling the date back by a day.
+    const iso = isoDate(
+      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`,
+    )
+    if (isWorkingDay(iso, project.calendar)) continue
+    const isHoliday = project.calendar.holidays.includes(iso)
+    const rect = document.createElementNS(ns, 'rect')
+    rect.setAttribute('class', 'non-working-overlay')
+    rect.setAttribute('x', String(firstTickX + i * columnWidth))
+    rect.setAttribute('y', String(yBase))
+    rect.setAttribute('width', String(columnWidth))
+    rect.setAttribute('height', String(h))
+    // Holidays → light red (red-200); weekends/other non-workdays → light orange (orange-200).
+    rect.setAttribute('fill', isHoliday ? '#fecaca' : '#fed7aa')
+    rect.setAttribute('pointer-events', 'none')
+    if (gridEl) gridEl.insertBefore(rect, anchor)
+  }
+}
