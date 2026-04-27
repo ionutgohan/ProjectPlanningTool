@@ -82,6 +82,7 @@ src/
   ui/
     planning/         # Planning view (tree + Gantt)
     resources/        # Resources view
+    holidays/         # Calendar / holidays editor
     gantt/            # Gantt wrapper component
     common/           # Buttons, dialogs, inputs
   App.tsx

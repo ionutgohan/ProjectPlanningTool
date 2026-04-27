@@ -90,7 +90,24 @@ export function GanttChart({ project, onItemClick, onItemDoubleClick }: GanttCha
     }
     syncSvgWidth(hostRef.current)
     shadeNonWorkingDays(hostRef.current, project, ganttRef.current)
+    pinHeader(hostRef.current)
   }, [project])
+
+  // Keep the date header visually fixed when the user scrolls the Gantt
+  // vertically. The header pieces (`.grid-header` rect + `.upper-text` /
+  // `.lower-text` date labels) live inside the SVG, so plain CSS
+  // `position: sticky` doesn't apply — instead we move them into a top-most
+  // `<g class="sticky-header">` (see pinHeader) and translate it on scroll.
+  useEffect(() => {
+    const scroller = hostRef.current?.parentElement
+    if (!scroller) return
+    const onScroll = () => {
+      const sticky = hostRef.current?.querySelector('svg .sticky-header')
+      if (sticky) sticky.setAttribute('transform', `translate(0 ${scroller.scrollTop})`)
+    }
+    scroller.addEventListener('scroll', onScroll, { passive: true })
+    return () => scroller.removeEventListener('scroll', onScroll)
+  }, [])
 
   // Re-apply arrow highlighting when either the hovered or click-selected item
   // changes. Hover wins when present, falling back to the sticky selection.
@@ -254,6 +271,45 @@ function syncSvgWidth(host: HTMLElement) {
   const gridWidth = Number(gridRow.getAttribute('width') ?? 0)
   if (!gridWidth) return
   svg.setAttribute('width', String(gridWidth))
+}
+
+/**
+ * Move the date header into a top-most `<g class="sticky-header">` so it can be
+ * translated on scroll to stay visually fixed at the top of the viewport.
+ *
+ * SVG draw order = DOM order. Appending the sticky group as the SVG's last
+ * child ensures the header rect and date labels paint on top of bars, arrows,
+ * and the non-working-day overlays when the chart is scrolled down.
+ *
+ * Called after every render (`refresh()` recreates these elements), so we
+ * always re-collect them. The scroll handler reads the current `.sticky-header`
+ * from the DOM each time, so the post-refresh element is picked up
+ * transparently.
+ */
+function pinHeader(host: HTMLElement) {
+  const svg = host.querySelector('svg')
+  if (!svg) return
+  // Drop any leftover sticky group from a prior render (refresh() recreates
+  // the underlying nodes, so the previous wrapper would be empty).
+  svg.querySelectorAll('.sticky-header').forEach((n) => n.remove())
+
+  const headerRect = svg.querySelector('.grid-header')
+  const dateTexts = svg.querySelectorAll('.upper-text, .lower-text')
+  if (!headerRect && dateTexts.length === 0) return
+
+  const ns = 'http://www.w3.org/2000/svg'
+  const sticky = document.createElementNS(ns, 'g')
+  sticky.setAttribute('class', 'sticky-header')
+  if (headerRect) sticky.appendChild(headerRect)
+  dateTexts.forEach((el) => sticky.appendChild(el))
+  svg.appendChild(sticky)
+
+  // Re-apply the current scroll offset so the header stays pinned across
+  // re-renders (refresh resets transform).
+  const scroller = host.parentElement
+  if (scroller && scroller.scrollTop > 0) {
+    sticky.setAttribute('transform', `translate(0 ${scroller.scrollTop})`)
+  }
 }
 
 function shadeNonWorkingDays(host: HTMLElement, project: Project, gantt: Gantt | null) {
