@@ -8,24 +8,21 @@ import {
   useSensors,
 } from '@dnd-kit/core'
 import clsx from 'clsx'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { aggregatedView } from '@/domain/aggregation'
 import { findItem, isGroup } from '@/domain/tree'
 import type { PlanningItem, Resource, ResourceAllocation } from '@/domain/types'
 import { usePlanningStore } from '@/store/planningStore'
+import { GANTT_BAR_PADDING, GANTT_HEADER_HEIGHT, GANTT_ROW_HEIGHT } from '@/ui/gantt/constants'
 import { Button } from '@/ui/common/Button'
 import { ItemEditor } from './ItemEditor'
 
-export function ItemTree() {
+export function ItemTreeToolbar() {
   const project = usePlanningStore((s) => s.project)
-  const moveItem = usePlanningStore((s) => s.moveItem)
   const addItem = usePlanningStore((s) => s.addItem)
   const selectedItemId = usePlanningStore((s) => s.selectedItemId)
   const autoAcceptReschedule = usePlanningStore((s) => s.autoAcceptReschedule)
   const setAutoAcceptReschedule = usePlanningStore((s) => s.setAutoAcceptReschedule)
-
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }))
-  const view = aggregatedView(project)
 
   /**
    * New items are inserted relative to the current selection:
@@ -50,6 +47,36 @@ export function ItemTree() {
     addItem(factory(parentId), idx + 1)
   }
 
+  return (
+    <div
+      className="border-b px-2 flex items-center gap-2 bg-white box-border"
+      style={{ height: GANTT_HEADER_HEIGHT }}
+    >
+      <Button size="sm" onClick={() => handleAdd(newTask)}>+ Task</Button>
+      <Button size="sm" onClick={() => handleAdd(newGroup)}>+ Group</Button>
+      <Button size="sm" onClick={() => handleAdd(newMilestone)}>+ Milestone</Button>
+      <label
+        className="flex items-center gap-1.5 text-sm text-gray-700 ml-auto cursor-pointer select-none"
+        title="When checked, dependency cascades apply without showing the confirmation dialog."
+      >
+        <input
+          type="checkbox"
+          checked={autoAcceptReschedule}
+          onChange={(e) => setAutoAcceptReschedule(e.target.checked)}
+        />
+        Auto-reschedule
+      </label>
+    </div>
+  )
+}
+
+export function ItemTreeBody() {
+  const project = usePlanningStore((s) => s.project)
+  const moveItem = usePlanningStore((s) => s.moveItem)
+
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }))
+  const view = aggregatedView(project)
+
   const handleDragEnd = (e: DragEndEvent) => {
     if (!e.over || !e.active) return
     const activeId = String(e.active.id)
@@ -70,36 +97,20 @@ export function ItemTree() {
   }
 
   return (
-    <div className="h-full flex flex-col">
-      <div className="border-b p-2 flex items-center gap-2 flex-wrap">
-        <Button size="sm" onClick={() => handleAdd(newTask)}>+ Task</Button>
-        <Button size="sm" onClick={() => handleAdd(newGroup)}>+ Group</Button>
-        <Button size="sm" onClick={() => handleAdd(newMilestone)}>+ Milestone</Button>
-        <label
-          className="flex items-center gap-1.5 text-sm text-gray-700 ml-auto cursor-pointer select-none"
-          title="When checked, dependency cascades apply without showing the confirmation dialog."
-        >
-          <input
-            type="checkbox"
-            checked={autoAcceptReschedule}
-            onChange={(e) => setAutoAcceptReschedule(e.target.checked)}
-          />
-          Auto-reschedule
-        </label>
-      </div>
-      <div className="overflow-auto flex-1">
-        <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
-          <TopLevelDropZone />
-          {project.items.map((item) => (
-            <TreeNode key={item.id} item={item} depth={0} view={view} />
-          ))}
-          {project.items.length === 0 && (
-            <div className="p-6 text-center text-gray-500 text-sm">
-              No items yet. Create your first task or group above.
-            </div>
-          )}
-        </DndContext>
-      </div>
+    // The top padding mirrors frappe-gantt's `padding/2` offset above its first
+    // grid row, so the tree's first row tops align with the Gantt's.
+    <div style={{ paddingTop: GANTT_BAR_PADDING / 2 }}>
+      <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
+        <TopLevelDropZone />
+        {project.items.map((item) => (
+          <TreeNode key={item.id} item={item} depth={0} view={view} />
+        ))}
+        {project.items.length === 0 && (
+          <div className="p-6 text-center text-gray-500 text-sm">
+            No items yet. Create your first task or group above.
+          </div>
+        )}
+      </DndContext>
     </div>
   )
 }
@@ -132,8 +143,9 @@ function TreeNode({ item, depth, view }: TreeNodeProps) {
   const setSelected = usePlanningStore((s) => s.setSelectedItem)
   const expanded = usePlanningStore((s) => s.expandedItemIds.has(item.id))
   const toggleExpanded = usePlanningStore((s) => s.toggleExpanded)
+  const collapsed = usePlanningStore((s) => s.project.collapsedGroupIds.includes(item.id))
+  const toggleGroupCollapsed = usePlanningStore((s) => s.toggleGroupCollapsed)
 
-  const [childrenOpen, setChildrenOpen] = useState(true)
   const bounds = view.get(item.id)
 
   const isSelected = selectedId === item.id
@@ -152,11 +164,11 @@ function TreeNode({ item, depth, view }: TreeNodeProps) {
           setSelected(item.id)
           toggleExpanded(item.id)
         }}
-        onChildToggle={item.type === 'group' ? () => setChildrenOpen((v) => !v) : undefined}
-        childrenOpen={childrenOpen}
+        onChildToggle={item.type === 'group' ? () => toggleGroupCollapsed(item.id) : undefined}
+        childrenOpen={!collapsed}
       />
-      {expanded && <ItemEditor item={item} />}
-      {item.type === 'group' && childrenOpen && (
+      {expanded && <EditorWrapper itemId={item.id}><ItemEditor item={item} /></EditorWrapper>}
+      {item.type === 'group' && !collapsed && (
         <div>
           {item.children.map((child) => (
             <TreeNode key={child.id} item={child} depth={depth + 1} view={view} />
@@ -166,6 +178,49 @@ function TreeNode({ item, depth, view }: TreeNodeProps) {
       )}
       <DropIndicator data={{ kind: 'after', targetId: item.id, parentId }} />
     </>
+  )
+}
+
+/**
+ * Wraps the inline ItemEditor so its rendered height is rounded up to a
+ * multiple of GANTT_ROW_HEIGHT and reported to the store. The Gantt reads the
+ * value to insert matching spacer rows so item rows stay aligned across panes.
+ *
+ * The ResizeObserver watches the *inner* div (the editor's natural size), not
+ * the outer wrapper — observing the wrapper would feed back its own height
+ * into the calculation and oscillate.
+ */
+function EditorWrapper({ itemId, children }: { itemId: string; children: React.ReactNode }) {
+  const setEditorRowHeight = usePlanningStore((s) => s.setEditorRowHeight)
+  const clearEditorRowHeight = usePlanningStore((s) => s.clearEditorRowHeight)
+  const innerRef = useRef<HTMLDivElement>(null)
+  const [rounded, setRounded] = useState(GANTT_ROW_HEIGHT)
+
+  useLayoutEffect(() => {
+    const el = innerRef.current
+    if (!el) return
+    const apply = (h: number) => {
+      const next = Math.max(GANTT_ROW_HEIGHT, Math.ceil(h / GANTT_ROW_HEIGHT) * GANTT_ROW_HEIGHT)
+      setRounded(next)
+      setEditorRowHeight(itemId, next)
+    }
+    apply(el.getBoundingClientRect().height)
+    const ro = new ResizeObserver((entries) => {
+      const entry = entries[0]
+      if (!entry) return
+      apply(entry.contentRect.height)
+    })
+    ro.observe(el)
+    return () => {
+      ro.disconnect()
+      clearEditorRowHeight(itemId)
+    }
+  }, [itemId, setEditorRowHeight, clearEditorRowHeight])
+
+  return (
+    <div style={{ height: rounded }} className="overflow-hidden">
+      <div ref={innerRef}>{children}</div>
+    </div>
   )
 }
 
@@ -225,12 +280,12 @@ function Row({ item, depth, isSelected, bounds, onRowClick, onRowDoubleClick, on
       }}
       data-item-id={item.id}
       className={clsx(
-        'flex items-center gap-2 px-2 py-1 border-b hover:bg-blue-50 cursor-pointer text-sm select-none',
+        'flex items-center gap-2 px-2 border-b hover:bg-blue-50 cursor-pointer text-sm select-none box-border',
         isSelected && 'bg-blue-100',
         isDragging && 'opacity-50',
         isOver && 'bg-green-100 ring-2 ring-green-400',
       )}
-      style={{ paddingLeft: `${depth * 16 + 8}px` }}
+      style={{ paddingLeft: `${depth * 16 + 8}px`, height: GANTT_ROW_HEIGHT }}
       onClick={onRowClick}
       onDoubleClick={onRowDoubleClick}
       onMouseEnter={handleMouseEnter}
@@ -303,24 +358,34 @@ function HoverPreview({ anchor, allocations, comments, resources }: HoverPreview
   )
 }
 
+/**
+ * Drop indicators must not consume vertical layout space — they would push tree
+ * rows out of sync with the fixed-height Gantt grid. The outer wrapper is
+ * `h-0`, and the actual hit-area + visual marker floats absolutely over the
+ * adjacent row borders so dnd-kit still gets a real rectangle to test against.
+ */
 function DropIndicator({ data }: { data: DropTargetData }) {
   const id = JSON.stringify(data)
   const { setNodeRef, isOver } = useDroppable({ id, data })
   return (
-    <div ref={setNodeRef} className={clsx('h-1', isOver && 'bg-green-500')} />
+    <div className="relative h-0">
+      <div
+        ref={setNodeRef}
+        className={clsx('absolute left-0 right-0 -top-1 h-2 z-10', isOver && 'bg-green-500')}
+      />
+    </div>
   )
 }
 
 function TopLevelDropZone() {
   const { setNodeRef, isOver } = useDroppable({ id: 'top-level', data: { kind: 'top-level' } satisfies DropTargetData })
   return (
-    <div
-      ref={setNodeRef}
-      className={clsx(
-        'h-2',
-        isOver && 'bg-green-300',
-      )}
-    />
+    <div className="relative h-0">
+      <div
+        ref={setNodeRef}
+        className={clsx('absolute left-0 right-0 top-0 h-2 z-10', isOver && 'bg-green-300')}
+      />
+    </div>
   )
 }
 
@@ -330,11 +395,13 @@ function GroupInnerDropZone({ groupId, depth }: { groupId: string; depth: number
     data: { kind: 'into-group', groupId } satisfies DropTargetData,
   })
   return (
-    <div
-      ref={setNodeRef}
-      className={clsx('h-2 mx-2 rounded', isOver && 'bg-green-300')}
-      style={{ marginLeft: `${depth * 16 + 8}px` }}
-    />
+    <div className="relative h-0">
+      <div
+        ref={setNodeRef}
+        className={clsx('absolute right-2 -top-1 h-2 rounded z-10', isOver && 'bg-green-300')}
+        style={{ left: `${depth * 16 + 8}px` }}
+      />
+    </div>
   )
 }
 

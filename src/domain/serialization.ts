@@ -2,7 +2,7 @@ import { detectCycles } from './scheduling'
 import { flatten, isGroup } from './tree'
 import type { Project } from './types'
 
-export const SCHEMA_VERSION = 1
+export const SCHEMA_VERSION = 2
 
 export type ImportResult =
   | { ok: true; project: Project }
@@ -14,7 +14,15 @@ export function exportProject(project: Project): string {
 
 type Migration = (raw: unknown) => unknown
 const migrations: Record<number, Migration> = {
-  // future: migrations[1] = (raw) => ({ ...raw, schemaVersion: 2, ...newFields })
+  // v1 → v2: introduce collapsedGroupIds (default empty — everything expanded).
+  1: (raw) => {
+    const obj = raw as Record<string, unknown>
+    return {
+      ...obj,
+      schemaVersion: 2,
+      collapsedGroupIds: Array.isArray(obj['collapsedGroupIds']) ? obj['collapsedGroupIds'] : [],
+    }
+  },
 }
 
 function migrate(raw: { schemaVersion?: number } & Record<string, unknown>): { ok: true; project: Project } | { ok: false; error: string } {
@@ -58,6 +66,7 @@ export function importProject(json: string): ImportResult {
   if (!Array.isArray(project.items)) return { ok: false, error: "'items' must be an array" }
   if (!Array.isArray(project.dependencies)) return { ok: false, error: "'dependencies' must be an array" }
   if (!Array.isArray(project.resources)) return { ok: false, error: "'resources' must be an array" }
+  if (!Array.isArray(project.collapsedGroupIds)) return { ok: false, error: "'collapsedGroupIds' must be an array" }
 
   // Duplicate IDs
   const allItems = flatten(project.items)
@@ -114,7 +123,12 @@ export function importProject(json: string): ImportResult {
     return { ok: false, error: `Dependency cycle detected: ${cycles[0]!.join(' → ')}` }
   }
 
-  return { ok: true, project }
+  // collapsedGroupIds may reference deleted groups; silently prune so the UI
+  // doesn't break. Don't reject — this is non-load-bearing UI state.
+  const groupIds = new Set(allItems.filter(isGroup).map((g) => g.id))
+  const cleaned = { ...project, collapsedGroupIds: project.collapsedGroupIds.filter((id) => groupIds.has(id)) }
+
+  return { ok: true, project: cleaned }
 }
 
 export function emptyProject(name = 'Untitled Project'): Project {
@@ -125,5 +139,6 @@ export function emptyProject(name = 'Untitled Project'): Project {
     items: [],
     dependencies: [],
     resources: [],
+    collapsedGroupIds: [],
   }
 }

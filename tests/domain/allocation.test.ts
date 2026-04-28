@@ -5,7 +5,7 @@ import type { Project } from '@/domain/types'
 import { isoDate } from '@/domain/types'
 
 const baseProject = (): Project => ({
-  schemaVersion: 1,
+  schemaVersion: 2,
   name: 'p',
   calendar: DEFAULT_CALENDAR,
   items: [],
@@ -13,6 +13,7 @@ const baseProject = (): Project => ({
   resources: [
     { id: 'r1', name: 'Alice', role: 'Eng', capacityPct: 100 },
   ],
+  collapsedGroupIds: [],
 })
 
 describe('allocation', () => {

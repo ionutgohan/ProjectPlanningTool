@@ -16,6 +16,23 @@ export function flatten(items: PlanningItem[]): PlanningItem[] {
   return out
 }
 
+/**
+ * Like `flatten`, but skips the descendants of any group whose id is in
+ * `collapsedGroupIds`. The collapsed group itself is still included so it
+ * can render its own row.
+ */
+export function visibleItems(items: PlanningItem[], collapsedGroupIds: ReadonlySet<string>): PlanningItem[] {
+  const out: PlanningItem[] = []
+  const walk = (list: PlanningItem[]): void => {
+    for (const item of list) {
+      out.push(item)
+      if (isGroup(item) && !collapsedGroupIds.has(item.id)) walk(item.children)
+    }
+  }
+  walk(items)
+  return out
+}
+
 export function findItem(items: PlanningItem[], id: string): PlanningItem | undefined {
   for (const item of items) {
     if (item.id === id) return item

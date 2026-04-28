@@ -8,7 +8,7 @@ import { isoDate } from '@/domain/types'
 const fixedDate = new Date('2026-04-19T10:00:00Z')
 
 const demo = (): Project => ({
-  schemaVersion: 1,
+  schemaVersion: 2,
   name: 'Demo',
   calendar: DEFAULT_CALENDAR,
   resources: [{ id: 'r1', name: 'Alice', role: 'Eng', capacityPct: 100 }],
@@ -53,6 +53,7 @@ const demo = (): Project => ({
     },
   ],
   dependencies: [{ id: 'd1', predecessorId: 't1', successorId: 't2', type: 'FS' }],
+  collapsedGroupIds: [],
 })
 
 describe('exportProjectAsHTML', () => {

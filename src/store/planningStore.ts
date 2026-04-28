@@ -41,6 +41,12 @@ interface PlanningState {
    *  editors or mutates real selection. */
   hoveredItemId: string | null
   expandedItemIds: Set<string>
+  /**
+   * Per-item editor wrapper height in pixels (rounded up to a multiple of the
+   * Gantt row height). Populated by ItemTree's ResizeObserver and consumed by
+   * GanttChart to insert matching spacer rows. Ephemeral — never persisted.
+   */
+  editorRowHeights: Map<string, number>
   pendingReschedule: PendingReschedule | null
   autoAcceptReschedule: boolean
   importError: string | null
@@ -62,6 +68,10 @@ interface PlanningState {
   setHoveredItem: (id: string | null) => void
   toggleExpanded: (id: string) => void
   setExpanded: (id: string, value: boolean) => void
+  toggleGroupCollapsed: (id: string) => void
+  setGroupCollapsed: (id: string, value: boolean) => void
+  setEditorRowHeight: (id: string, heightPx: number) => void
+  clearEditorRowHeight: (id: string) => void
 
   addItem: (item: PlanningItem, index?: number) => void
   updateItem: (id: string, patch: Partial<PlanningItem>) => void
@@ -153,6 +163,7 @@ export const usePlanningStore = create<PlanningState>((set, get) => ({
   selectedItemId: null,
   hoveredItemId: null,
   expandedItemIds: new Set<string>(),
+  editorRowHeights: new Map<string, number>(),
   pendingReschedule: null,
   autoAcceptReschedule: false,
   importError: null,
@@ -179,6 +190,34 @@ export const usePlanningStore = create<PlanningState>((set, get) => ({
       if (value) next.add(id)
       else next.delete(id)
       return { expandedItemIds: next }
+    }),
+  toggleGroupCollapsed: (id) =>
+    set((s) => {
+      const set_ = new Set(s.project.collapsedGroupIds)
+      if (set_.has(id)) set_.delete(id)
+      else set_.add(id)
+      return { project: { ...s.project, collapsedGroupIds: Array.from(set_) } }
+    }),
+  setGroupCollapsed: (id, value) =>
+    set((s) => {
+      const set_ = new Set(s.project.collapsedGroupIds)
+      if (value) set_.add(id)
+      else set_.delete(id)
+      return { project: { ...s.project, collapsedGroupIds: Array.from(set_) } }
+    }),
+  setEditorRowHeight: (id, heightPx) =>
+    set((s) => {
+      if (s.editorRowHeights.get(id) === heightPx) return s
+      const next = new Map(s.editorRowHeights)
+      next.set(id, heightPx)
+      return { editorRowHeights: next }
+    }),
+  clearEditorRowHeight: (id) =>
+    set((s) => {
+      if (!s.editorRowHeights.has(id)) return s
+      const next = new Map(s.editorRowHeights)
+      next.delete(id)
+      return { editorRowHeights: next }
     }),
 
   addItem: (item, index) =>
@@ -305,7 +344,7 @@ export const usePlanningStore = create<PlanningState>((set, get) => ({
       set({ importError: result.error })
       return false
     }
-    set({ project: result.project, importError: null, pendingReschedule: null, selectedItemId: null, expandedItemIds: new Set() })
+    set({ project: result.project, importError: null, pendingReschedule: null, selectedItemId: null, expandedItemIds: new Set(), editorRowHeights: new Map() })
     return true
   },
 
@@ -313,9 +352,9 @@ export const usePlanningStore = create<PlanningState>((set, get) => ({
 
   exportHTML: () => exportProjectAsHTML(get().project),
 
-  loadDemo: () => set({ project: buildDemoProject(), pendingReschedule: null, selectedItemId: null, expandedItemIds: new Set() }),
+  loadDemo: () => set({ project: buildDemoProject(), pendingReschedule: null, selectedItemId: null, expandedItemIds: new Set(), editorRowHeights: new Map() }),
 
-  resetProject: () => set({ project: emptyProject(), pendingReschedule: null, selectedItemId: null, expandedItemIds: new Set() }),
+  resetProject: () => set({ project: emptyProject(), pendingReschedule: null, selectedItemId: null, expandedItemIds: new Set(), editorRowHeights: new Map() }),
 }))
 
 function applyBoundsChange(items: PlanningItem[], change: RescheduleChange): PlanningItem[] {
@@ -357,8 +396,9 @@ function buildDemoProject(): Project {
   const m1 = uuid()
   const start: ISODate = '2026-04-20' as ISODate
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     name: 'Demo project',
+    collapsedGroupIds: [],
     calendar: { workdays: ['mon', 'tue', 'wed', 'thu', 'fri'], holidays: [] },
     resources: [r1, r2],
     items: [
