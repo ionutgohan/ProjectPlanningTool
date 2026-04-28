@@ -30,6 +30,7 @@ const richProject = (): Project => ({
     },
   ],
   dependencies: [],
+  collapsedGroupIds: [],
 })
 
 describe('serialization', () => {
@@ -108,5 +109,39 @@ describe('serialization', () => {
     const r = importProject(JSON.stringify(p))
     expect(r.ok).toBe(false)
     if (!r.ok) expect(r.error).toMatch(/cycle/i)
+  })
+
+  it('round-trips collapsedGroupIds', () => {
+    const p = richProject()
+    p.collapsedGroupIds = ['g1']
+    const json = exportProject(p)
+    const result = importProject(json)
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.project.collapsedGroupIds).toEqual(['g1'])
+  })
+
+  it('migrates a v1 project by adding empty collapsedGroupIds', () => {
+    const v1 = {
+      schemaVersion: 1,
+      name: 'old',
+      calendar: { workdays: ['mon', 'tue', 'wed', 'thu', 'fri'], holidays: [] },
+      resources: [],
+      items: [],
+      dependencies: [],
+    }
+    const result = importProject(JSON.stringify(v1))
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.project.schemaVersion).toBe(SCHEMA_VERSION)
+      expect(result.project.collapsedGroupIds).toEqual([])
+    }
+  })
+
+  it('drops collapsedGroupIds that reference deleted groups', () => {
+    const p = richProject()
+    p.collapsedGroupIds = ['g1', 'ghost']
+    const result = importProject(JSON.stringify(p))
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.project.collapsedGroupIds).toEqual(['g1'])
   })
 })

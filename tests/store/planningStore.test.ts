@@ -1,14 +1,15 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { usePlanningStore } from '@/store/planningStore'
-import { findItem } from '@/domain/tree'
+import { findItem, visibleItems } from '@/domain/tree'
 import { isoDate, type Project } from '@/domain/types'
 
 function seedProject(): Project {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     name: 'test',
     calendar: { workdays: ['mon', 'tue', 'wed', 'thu', 'fri'], holidays: [] },
     resources: [{ id: 'r1', name: 'Alice', role: 'Eng', capacityPct: 100 }],
+    collapsedGroupIds: [],
     items: [
       {
         id: 't1',
@@ -42,6 +43,7 @@ describe('planningStore', () => {
       pendingReschedule: null,
       selectedItemId: null,
       expandedItemIds: new Set(),
+      editorRowHeights: new Map(),
       view: 'planning',
       importError: null,
     })
@@ -96,6 +98,55 @@ describe('planningStore', () => {
     const ok = usePlanningStore.getState().importJSON('{not json')
     expect(ok).toBe(false)
     expect(usePlanningStore.getState().importError).toMatch(/Invalid JSON/)
+  })
+
+  it('toggleGroupCollapsed hides descendants from the visible item list', () => {
+    // Replace seed with a tree that has a group, so collapse has something to hide.
+    usePlanningStore.setState({
+      project: {
+        schemaVersion: 2,
+        name: 'collapse',
+        calendar: { workdays: ['mon', 'tue', 'wed', 'thu', 'fri'], holidays: [] },
+        resources: [],
+        collapsedGroupIds: [],
+        items: [
+          {
+            id: 'g1',
+            type: 'group',
+            name: 'g1',
+            parentGroupId: null,
+            comments: '',
+            children: [
+              {
+                id: 'tA',
+                type: 'task',
+                name: 'tA',
+                parentGroupId: 'g1',
+                comments: '',
+                startDate: isoDate('2026-04-20'),
+                estimationMD: 1,
+                allocations: [],
+              },
+            ],
+          },
+        ],
+        dependencies: [],
+      },
+    })
+
+    const beforeIds = visibleItems(
+      usePlanningStore.getState().project.items,
+      new Set(usePlanningStore.getState().project.collapsedGroupIds),
+    ).map((i) => i.id)
+    expect(beforeIds).toEqual(['g1', 'tA'])
+
+    usePlanningStore.getState().toggleGroupCollapsed('g1')
+
+    const afterIds = visibleItems(
+      usePlanningStore.getState().project.items,
+      new Set(usePlanningStore.getState().project.collapsedGroupIds),
+    ).map((i) => i.id)
+    expect(afterIds).toEqual(['g1'])
   })
 
   it('updateCalendar persists holiday edits', () => {

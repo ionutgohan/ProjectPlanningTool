@@ -64,6 +64,8 @@ export interface Project {
   items: PlanningItem[]
   dependencies: Dependency[]
   resources: Resource[]
+  /** Ids of groups whose children are hidden in the tree and Gantt. */
+  collapsedGroupIds: string[]
 }
 
 export interface ComputedBounds {

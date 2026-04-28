@@ -1,28 +1,63 @@
 import Gantt, { type GanttTaskInput } from 'frappe-gantt'
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, type RefObject } from 'react'
 import { aggregatedView } from '@/domain/aggregation'
 import { diffWorkingDays, isWorkingDay, toISO } from '@/domain/calendar'
-import { findItem, flatten } from '@/domain/tree'
+import { findItem, visibleItems } from '@/domain/tree'
 import { isoDate, type Project } from '@/domain/types'
 import { usePlanningStore } from '@/store/planningStore'
+import { GANTT_BAR_HEIGHT, GANTT_BAR_PADDING, GANTT_HEADER_HEIGHT, GANTT_ROW_HEIGHT } from './constants'
 
 interface GanttChartProps {
   project: Project
+  /**
+   * The vertical scroll container that owns vertical scrolling for both the
+   * Gantt and the item tree. The Gantt's pinned date row is translated against
+   * this element's scrollTop so it stays at the visible top during scroll.
+   */
+  scrollContainerRef?: RefObject<HTMLDivElement | null>
   onItemClick?: (id: string) => void
   onItemDoubleClick?: (id: string) => void
 }
 
-function toGanttTasks(project: Project): GanttTaskInput[] {
+const SPACER_PREFIX = '__spacer_'
+const isSpacerId = (id: string) => id.startsWith(SPACER_PREFIX)
+
+/**
+ * Build the Gantt task list. Walks the item tree honoring `collapsedGroupIds`
+ * and, for each item whose inline editor is currently open, appends N spacer
+ * tasks so the Gantt grid leaves a vertical gap matching the editor's height
+ * on the tree side. Spacer tasks have hidden bars (see `.spacer-row` in
+ * index.css).
+ */
+function toGanttTasks(project: Project, expandedItemIds: ReadonlySet<string>, editorRowHeights: ReadonlyMap<string, number>): GanttTaskInput[] {
   const view = aggregatedView(project)
   const depsBySucc = new Map<string, string[]>()
   for (const d of project.dependencies) {
     if (!depsBySucc.has(d.successorId)) depsBySucc.set(d.successorId, [])
     depsBySucc.get(d.successorId)!.push(d.predecessorId)
   }
+  const collapsed = new Set(project.collapsedGroupIds)
+  // Pick any valid date to use as a placeholder anchor for items that have no
+  // computable bounds (e.g. an empty group). The bar is hidden by CSS, so the
+  // exact value doesn't matter — frappe-gantt only needs *something* parseable.
+  const fallbackDate = view.values().next().value?.startDate ?? '2020-01-01'
   const tasks: GanttTaskInput[] = []
-  for (const item of flatten(project.items)) {
+  for (const item of visibleItems(project.items, collapsed)) {
     const b = view.get(item.id)
-    if (!b) continue
+    if (!b) {
+      // Reserve a row in the Gantt so subsequent items stay aligned with the
+      // tree. The bar itself is invisible (`spacer-row`).
+      tasks.push({
+        id: `${SPACER_PREFIX}empty_${item.id}`,
+        name: '',
+        start: fallbackDate,
+        end: fallbackDate,
+        progress: 0,
+        dependencies: '',
+        custom_class: 'spacer-row',
+      })
+      continue
+    }
     const preds = depsBySucc.get(item.id) ?? []
     const custom =
       item.type === 'milestone' ? 'gantt-milestone' :
@@ -36,11 +71,26 @@ function toGanttTasks(project: Project): GanttTaskInput[] {
       dependencies: preds.join(','),
       custom_class: custom,
     })
+    if (expandedItemIds.has(item.id)) {
+      const editorHeight = editorRowHeights.get(item.id) ?? 0
+      const spacerRows = Math.max(0, Math.round(editorHeight / GANTT_ROW_HEIGHT))
+      for (let i = 0; i < spacerRows; i++) {
+        tasks.push({
+          id: `${SPACER_PREFIX}${item.id}_${i}`,
+          name: '',
+          start: b.startDate,
+          end: b.startDate,
+          progress: 0,
+          dependencies: '',
+          custom_class: 'spacer-row',
+        })
+      }
+    }
   }
   return tasks
 }
 
-export function GanttChart({ project, onItemClick, onItemDoubleClick }: GanttChartProps) {
+export function GanttChart({ project, scrollContainerRef, onItemClick, onItemDoubleClick }: GanttChartProps) {
   const hostRef = useRef<HTMLDivElement>(null)
   const ganttRef = useRef<Gantt | null>(null)
   const clickRef = useRef(onItemClick)
@@ -50,6 +100,8 @@ export function GanttChart({ project, onItemClick, onItemDoubleClick }: GanttCha
   const selectedItemId = usePlanningStore((s) => s.selectedItemId)
   const hoveredItemId = usePlanningStore((s) => s.hoveredItemId)
   const setHoveredItem = usePlanningStore((s) => s.setHoveredItem)
+  const expandedItemIds = usePlanningStore((s) => s.expandedItemIds)
+  const editorRowHeights = usePlanningStore((s) => s.editorRowHeights)
   // The id of the bar the user pressed down on. Used to ignore the cascaded
   // date_change events that frappe-gantt emits for dependent bars it shifted
   // along — only the bar actually grabbed by the user should push an edit.
@@ -57,7 +109,7 @@ export function GanttChart({ project, onItemClick, onItemDoubleClick }: GanttCha
 
   useEffect(() => {
     if (!hostRef.current) return
-    const tasks = toGanttTasks(project)
+    const tasks = toGanttTasks(project, expandedItemIds, editorRowHeights)
     if (tasks.length === 0) {
       hostRef.current.innerHTML = ''
       ganttRef.current = null
@@ -66,10 +118,15 @@ export function GanttChart({ project, onItemClick, onItemDoubleClick }: GanttCha
     if (!ganttRef.current) {
       ganttRef.current = new Gantt(hostRef.current, tasks, {
         view_mode: 'Day',
-        bar_height: 18,
-        padding: 14,
-        on_click: (t) => clickRef.current?.(t.id),
+        bar_height: GANTT_BAR_HEIGHT,
+        padding: GANTT_BAR_PADDING,
+        header_height: GANTT_HEADER_HEIGHT,
+        on_click: (t) => {
+          if (isSpacerId(t.id)) return
+          clickRef.current?.(t.id)
+        },
         on_date_change: (task, start, end) => {
+          if (isSpacerId(task.id)) return
           handleBarDateChange(task.id, start, end, draggedIdRef.current, ganttRef.current)
         },
       })
@@ -90,16 +147,18 @@ export function GanttChart({ project, onItemClick, onItemDoubleClick }: GanttCha
     }
     syncSvgWidth(hostRef.current)
     shadeNonWorkingDays(hostRef.current, project, ganttRef.current)
-    pinHeader(hostRef.current)
-  }, [project])
+    pinHeader(hostRef.current, scrollContainerRef?.current ?? hostRef.current.parentElement)
+  }, [project, expandedItemIds, editorRowHeights, scrollContainerRef])
 
-  // Keep the date header visually fixed when the user scrolls the Gantt
-  // vertically. The header pieces (`.grid-header` rect + `.upper-text` /
-  // `.lower-text` date labels) live inside the SVG, so plain CSS
-  // `position: sticky` doesn't apply — instead we move them into a top-most
-  // `<g class="sticky-header">` (see pinHeader) and translate it on scroll.
+  // Keep the date header visually fixed when the user scrolls vertically. The
+  // header pieces (`.grid-header` rect + `.upper-text` / `.lower-text` date
+  // labels) live inside the SVG, so plain CSS `position: sticky` doesn't
+  // apply — instead we move them into a top-most `<g class="sticky-header">`
+  // (see pinHeader) and translate it on scroll. The vertical scroller is the
+  // outer PlanningView container, not the gantt-host, so the listener attaches
+  // to the ref provided by the parent.
   useEffect(() => {
-    const scroller = hostRef.current?.parentElement
+    const scroller = scrollContainerRef?.current ?? hostRef.current?.parentElement
     if (!scroller) return
     const onScroll = () => {
       const sticky = hostRef.current?.querySelector('svg .sticky-header')
@@ -107,7 +166,7 @@ export function GanttChart({ project, onItemClick, onItemDoubleClick }: GanttCha
     }
     scroller.addEventListener('scroll', onScroll, { passive: true })
     return () => scroller.removeEventListener('scroll', onScroll)
-  }, [])
+  }, [scrollContainerRef])
 
   // Re-apply arrow highlighting when either the hovered or click-selected item
   // changes. Hover wins when present, falling back to the sticky selection.
@@ -131,7 +190,7 @@ export function GanttChart({ project, onItemClick, onItemDoubleClick }: GanttCha
     }
     const onOver = (e: PointerEvent) => {
       const id = findBarId(e.target)
-      if (id) setHoveredItem(id)
+      if (id && !isSpacerId(id)) setHoveredItem(id)
     }
     const onOut = (e: PointerEvent) => {
       // Only clear when leaving the bar (entering an unrelated element).
@@ -144,7 +203,7 @@ export function GanttChart({ project, onItemClick, onItemDoubleClick }: GanttCha
     }
     const onDblClick = (e: MouseEvent) => {
       const id = findBarId(e.target)
-      if (id) dblClickRef.current?.(id)
+      if (id && !isSpacerId(id)) dblClickRef.current?.(id)
     }
     host.addEventListener('pointerover', onOver)
     host.addEventListener('pointerout', onOut)
@@ -159,7 +218,7 @@ export function GanttChart({ project, onItemClick, onItemDoubleClick }: GanttCha
   }, [setHoveredItem])
 
   return (
-    <div className="gantt-host overflow-auto h-full">
+    <div className="gantt-host overflow-x-auto">
       <div ref={hostRef} />
     </div>
   )
@@ -218,10 +277,11 @@ function handleBarDateChange(
   const state = usePlanningStore.getState()
   const item = findItem(state.project.items, taskId)
   if (!item) return
+  const snapTasks = () => toGanttTasks(state.project, state.expandedItemIds, state.editorRowHeights)
   if (item.type !== 'task') {
     // Snap back. refresh() is synchronous; queueing avoids recursing inside
     // frappe-gantt's mouseup handler which is still finishing up.
-    if (gantt) queueMicrotask(() => gantt.refresh(toGanttTasks(state.project)))
+    if (gantt) queueMicrotask(() => gantt.refresh(snapTasks()))
     return
   }
   const newStartISO = snapDateToNearestDay(start)
@@ -233,7 +293,7 @@ function handleBarDateChange(
     // count. frappe-gantt has already moved the bar to the drop position, so
     // without a refresh it stays visually displaced from the canonical state.
     // Snap it back.
-    if (gantt) queueMicrotask(() => gantt.refresh(toGanttTasks(state.project)))
+    if (gantt) queueMicrotask(() => gantt.refresh(snapTasks()))
     return
   }
   state.updateItem(taskId, { startDate: newStartISO, estimationMD })
@@ -286,7 +346,7 @@ function syncSvgWidth(host: HTMLElement) {
  * from the DOM each time, so the post-refresh element is picked up
  * transparently.
  */
-function pinHeader(host: HTMLElement) {
+function pinHeader(host: HTMLElement, scroller: HTMLElement | null) {
   const svg = host.querySelector('svg')
   if (!svg) return
   // Drop any leftover sticky group from a prior render (refresh() recreates
@@ -306,7 +366,6 @@ function pinHeader(host: HTMLElement) {
 
   // Re-apply the current scroll offset so the header stays pinned across
   // re-renders (refresh resets transform).
-  const scroller = host.parentElement
   if (scroller && scroller.scrollTop > 0) {
     sticky.setAttribute('transform', `translate(0 ${scroller.scrollTop})`)
   }

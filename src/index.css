@@ -43,3 +43,10 @@ body {
 .gantt-host .arrow path.arrow-highlighted {
   opacity: 1;
 }
+
+/* Spacer rows reserve vertical space in the Gantt to mirror an open inline
+   editor on the tree side. The grid-row underneath them stays visible (so the
+   timeline columns remain continuous), but the bar itself is hidden. */
+.gantt-host .bar-wrapper.spacer-row {
+  display: none;
+}

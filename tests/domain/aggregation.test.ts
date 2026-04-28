@@ -5,12 +5,13 @@ import type { Project } from '@/domain/types'
 import { isoDate } from '@/domain/types'
 
 const project = (items: Project['items']): Project => ({
-  schemaVersion: 1,
+  schemaVersion: 2,
   name: 'p',
   calendar: DEFAULT_CALENDAR,
   items,
   dependencies: [],
   resources: [],
+  collapsedGroupIds: [],
 })
 
 describe('aggregatedView', () => {

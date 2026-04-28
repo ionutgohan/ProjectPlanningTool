@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ancestorChain, findItem, findParent, flatten, moveItem, removeItem, replaceItem } from '@/domain/tree'
+import { ancestorChain, findItem, findParent, flatten, moveItem, removeItem, replaceItem, visibleItems } from '@/domain/tree'
 import type { PlanningItem } from '@/domain/types'
 import { isoDate } from '@/domain/types'
 
@@ -119,5 +119,44 @@ describe('tree ops', () => {
   it('removeItem deletes node', () => {
     const next = removeItem(fixture(), 't1')
     expect(findItem(next, 't1')).toBeUndefined()
+  })
+
+  describe('visibleItems', () => {
+    it('matches flatten when nothing is collapsed', () => {
+      const items = fixture()
+      expect(visibleItems(items, new Set()).map((i) => i.id)).toEqual(flatten(items).map((i) => i.id))
+    })
+
+    it('hides children of a collapsed group but keeps the group itself', () => {
+      const items = fixture()
+      const ids = visibleItems(items, new Set(['g1'])).map((i) => i.id)
+      expect(ids).toEqual(['g1', 'g2', 't3'])
+    })
+
+    it('hides nested descendants when an ancestor is collapsed', () => {
+      const items: PlanningItem[] = [
+        {
+          id: 'g1',
+          type: 'group',
+          name: 'g1',
+          parentGroupId: null,
+          comments: '',
+          children: [
+            {
+              id: 'g2',
+              type: 'group',
+              name: 'g2',
+              parentGroupId: 'g1',
+              comments: '',
+              children: [mkTask('t', 'g2')],
+            },
+          ],
+        },
+      ]
+      // Collapsing g1 hides g2 *and* t inside it.
+      expect(visibleItems(items, new Set(['g1'])).map((i) => i.id)).toEqual(['g1'])
+      // Collapsing only g2 keeps g2 visible but hides t.
+      expect(visibleItems(items, new Set(['g2'])).map((i) => i.id)).toEqual(['g1', 'g2'])
+    })
   })
 })
