@@ -15,10 +15,14 @@ body {
 
 .gantt-host .bar-wrapper.gantt-milestone .bar {
   /* Without transform-box: fill-box the SVG default is view-box, which rotates
-     the rect around the entire SVG's centre and flings it to the wrong row/day. */
-  transform: rotate(45deg);
+     the rect around the entire SVG's centre and flings it to the wrong row/day.
+     scaleX shrinks the column-wide rect down to bar_height so the rotation
+     yields a square rhombus (matching the ◆ icon used in the tree) instead of
+     the elongated parallelogram the raw column-width × bar-height rect produces. */
+  transform: rotate(45deg) scaleX(0.474);
   transform-box: fill-box;
   transform-origin: center;
+  fill: #1f2937;
 }
 
 /* The progress stripe and resize handles render as axis-aligned rects on top of
