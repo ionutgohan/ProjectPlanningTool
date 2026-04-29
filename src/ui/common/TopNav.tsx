@@ -1,5 +1,6 @@
 import clsx from 'clsx'
 import { useRef } from 'react'
+import { StandaloneExportUnavailableError } from '@/domain/standaloneExport'
 import { usePlanningStore } from '@/store/planningStore'
 import {
   clearLastHandle,
@@ -17,7 +18,7 @@ export function TopNav() {
   const projectName = usePlanningStore((s) => s.project.name)
   const setProjectName = usePlanningStore((s) => s.setProjectName)
   const exportJSON = usePlanningStore((s) => s.exportJSON)
-  const exportHTML = usePlanningStore((s) => s.exportHTML)
+  const exportStandaloneHTML = usePlanningStore((s) => s.exportStandaloneHTML)
   const importJSON = usePlanningStore((s) => s.importJSON)
   const resetProject = usePlanningStore((s) => s.resetProject)
   const resumeFileName = usePlanningStore((s) => s.resumeFileName)
@@ -40,7 +41,17 @@ export function TopNav() {
   }
 
   const handleExportJSON = () => triggerDownload(exportJSON(), 'application/json', 'json')
-  const handleExportHTML = () => triggerDownload(exportHTML(), 'text/html', 'html')
+  const handleExportHTML = () => {
+    try {
+      triggerDownload(exportStandaloneHTML(), 'text/html', 'html')
+    } catch (err) {
+      if (err instanceof StandaloneExportUnavailableError) {
+        window.alert(err.message)
+        return
+      }
+      throw err
+    }
+  }
 
   const handleImportClick = async () => {
     // Use the File System Access API so we can remember the file for next launch.
@@ -163,7 +174,7 @@ export function TopNav() {
         )}
         <Button variant="secondary" size="sm" onClick={handleNew} title="Start a blank new project">New project</Button>
         <Button variant="secondary" size="sm" onClick={handleImportClick}>Import project</Button>
-        <Button variant="secondary" size="sm" onClick={handleExportHTML} title="Self-contained HTML snapshot — viewable in any browser">Export HTML</Button>
+        <Button variant="secondary" size="sm" onClick={handleExportHTML} title="Single self-contained HTML — full editable tool with this plan baked in">Export HTML</Button>
         <Button variant="primary" size="sm" onClick={handleExportJSON}>Export project</Button>
         <input
           ref={fileRef}
