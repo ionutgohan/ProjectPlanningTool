@@ -8,8 +8,8 @@ import {
   type RescheduleChange,
   type RescheduleProposal,
 } from '@/domain/scheduling'
-import { exportProjectAsHTML } from '@/domain/htmlExport'
 import { emptyProject, exportProject, importProject } from '@/domain/serialization'
+import { buildStandaloneHTML } from '@/domain/standaloneExport'
 import { findItem, flatten, insertItem, moveItem as moveItemInTree, removeItem, replaceItem } from '@/domain/tree'
 import type {
   Calendar,
@@ -94,7 +94,8 @@ interface PlanningState {
 
   importJSON: (text: string) => boolean
   exportJSON: () => string
-  exportHTML: () => string
+  exportStandaloneHTML: () => string
+  loadProject: (project: Project) => void
   loadDemo: () => void
   resetProject: () => void
 }
@@ -350,7 +351,10 @@ export const usePlanningStore = create<PlanningState>((set, get) => ({
 
   exportJSON: () => exportProject(get().project),
 
-  exportHTML: () => exportProjectAsHTML(get().project),
+  exportStandaloneHTML: () => buildStandaloneHTML(get().project),
+
+  loadProject: (project) =>
+    set({ project, pendingReschedule: null, selectedItemId: null, expandedItemIds: new Set(), editorRowHeights: new Map(), importError: null }),
 
   loadDemo: () => set({ project: buildDemoProject(), pendingReschedule: null, selectedItemId: null, expandedItemIds: new Set(), editorRowHeights: new Map() }),
 
