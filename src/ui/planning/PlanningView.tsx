@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { usePlanningStore } from '@/store/planningStore'
 import { GanttChart } from '@/ui/gantt/GanttChart'
+import { GanttToolbar } from '@/ui/gantt/GanttToolbar'
 import { ItemTreeBody, ItemTreeToolbar } from './ItemTree'
 import { RescheduleDialog } from './RescheduleDialog'
 
@@ -9,12 +10,23 @@ const MIN_PCT = 15
 const MAX_PCT = 85
 const DEFAULT_PCT = 40
 
+const ZOOM_STORAGE_KEY = 'planning.ganttZoomPct'
+const DEFAULT_ZOOM = 0
+
 function loadInitialSplit(): number {
   if (typeof window === 'undefined') return DEFAULT_PCT
   const raw = window.localStorage.getItem(SPLIT_STORAGE_KEY)
   const parsed = raw ? Number(raw) : NaN
   if (!Number.isFinite(parsed)) return DEFAULT_PCT
   return Math.min(MAX_PCT, Math.max(MIN_PCT, parsed))
+}
+
+function loadInitialZoom(): number {
+  if (typeof window === 'undefined') return DEFAULT_ZOOM
+  const raw = window.localStorage.getItem(ZOOM_STORAGE_KEY)
+  const parsed = raw ? Number(raw) : NaN
+  if (!Number.isFinite(parsed)) return DEFAULT_ZOOM
+  return Math.min(100, Math.max(0, parsed))
 }
 
 export function PlanningView() {
@@ -25,10 +37,15 @@ export function PlanningView() {
   const splitContainerRef = useRef<HTMLDivElement>(null)
   const [splitPct, setSplitPct] = useState<number>(loadInitialSplit)
   const [isDragging, setIsDragging] = useState(false)
+  const [zoomPct, setZoomPct] = useState<number>(loadInitialZoom)
 
   useEffect(() => {
     window.localStorage.setItem(SPLIT_STORAGE_KEY, String(splitPct))
   }, [splitPct])
+
+  useEffect(() => {
+    window.localStorage.setItem(ZOOM_STORAGE_KEY, String(zoomPct))
+  }, [zoomPct])
 
   useEffect(() => {
     if (!isDragging) return
@@ -98,10 +115,14 @@ export function PlanningView() {
             }`}
             title="Drag to resize · Double-click to reset"
           />
-          <div className="flex-1 min-w-0">
+          <div className="flex-1 min-w-0 flex flex-col">
+            <div className="sticky top-0 z-20">
+              <GanttToolbar zoomPct={zoomPct} onZoomChange={setZoomPct} />
+            </div>
             <GanttChart
               project={project}
               scrollContainerRef={scrollerRef}
+              zoomPct={zoomPct}
               onItemClick={(id) => setSelectedItem(id)}
               onItemDoubleClick={(id) => {
                 setSelectedItem(id)

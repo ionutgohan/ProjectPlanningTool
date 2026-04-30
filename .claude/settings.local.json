@@ -7,7 +7,11 @@
       "mcp__Claude_Preview__preview_start",
       "Bash(git stash *)",
       "Bash(git checkout *)",
-      "Bash(git add *)"
+      "Bash(git add *)",
+      "Bash(git push *)",
+      "Read(//opt/homebrew/bin/**)",
+      "Read(//usr/local/bin/**)",
+      "Bash(command -v gh)"
     ]
   }
 }

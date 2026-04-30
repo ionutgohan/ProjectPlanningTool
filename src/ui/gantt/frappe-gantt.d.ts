@@ -33,5 +33,6 @@ declare module 'frappe-gantt' {
     constructor(wrapper: string | HTMLElement | SVGElement, tasks: GanttTaskInput[], options?: GanttOptions)
     refresh(tasks: GanttTaskInput[]): void
     change_view_mode(mode: string): void
+    options: GanttOptions & { column_width: number; step: number }
   }
 }

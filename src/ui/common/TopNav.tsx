@@ -174,8 +174,8 @@ export function TopNav() {
         )}
         <Button variant="secondary" size="sm" onClick={handleNew} title="Start a blank new project">New project</Button>
         <Button variant="secondary" size="sm" onClick={handleImportClick}>Import project</Button>
-        <Button variant="secondary" size="sm" onClick={handleExportHTML} title="Single self-contained HTML — full editable tool with this plan baked in">Export HTML</Button>
-        <Button variant="primary" size="sm" onClick={handleExportJSON}>Export project</Button>
+        <Button variant="secondary" size="sm" onClick={handleExportHTML} title="Single self-contained HTML — full editable tool with this plan baked in">Save As</Button>
+        <Button variant="primary" size="sm" onClick={handleExportJSON}>Export JSON</Button>
         <input
           ref={fileRef}
           type="file"

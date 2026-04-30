@@ -1,5 +1,5 @@
 import Gantt, { type GanttTaskInput } from 'frappe-gantt'
-import { useEffect, useRef, type RefObject } from 'react'
+import { useEffect, useRef, useState, type RefObject } from 'react'
 import { aggregatedView } from '@/domain/aggregation'
 import { diffWorkingDays, isWorkingDay, toISO } from '@/domain/calendar'
 import { findItem, visibleItems } from '@/domain/tree'
@@ -15,8 +15,53 @@ interface GanttChartProps {
    * this element's scrollTop so it stays at the visible top during scroll.
    */
   scrollContainerRef?: RefObject<HTMLDivElement | null>
+  /**
+   * Calendar zoom level, 0–100. 0 = ~3 months visible across the gantt
+   * viewport; 100 = ~2 weeks visible. Drives `column_width` based on the
+   * measured width of the gantt panel.
+   */
+  zoomPct?: number
   onItemClick?: (id: string) => void
   onItemDoubleClick?: (id: string) => void
+}
+
+const ZOOM_MAX_DAYS = 90 // visible at zoomPct=0
+const ZOOM_MIN_DAYS = 14 // visible at zoomPct=100
+const COLUMN_WIDTH_FLOOR = 6
+// When the visible span reaches this many days the calendar header switches
+// from per-day to per-week (ISO calendar week numbers).
+const WEEK_MODE_DAY_THRESHOLD = 21
+
+type GanttViewMode = 'Day' | 'Week'
+
+interface ZoomLayout {
+  viewMode: GanttViewMode
+  columnWidth: number
+}
+
+function computeZoomLayout(zoomPct: number, panelWidth: number): ZoomLayout {
+  const t = Math.min(1, Math.max(0, zoomPct / 100))
+  const days = ZOOM_MAX_DAYS - (ZOOM_MAX_DAYS - ZOOM_MIN_DAYS) * t
+  if (panelWidth <= 0) {
+    return { viewMode: 'Day', columnWidth: 38 }
+  }
+  if (days >= WEEK_MODE_DAY_THRESHOLD) {
+    const weeks = days / 7
+    return { viewMode: 'Week', columnWidth: Math.max(COLUMN_WIDTH_FLOOR, panelWidth / weeks) }
+  }
+  return { viewMode: 'Day', columnWidth: Math.max(COLUMN_WIDTH_FLOOR, panelWidth / days) }
+}
+
+/**
+ * ISO 8601 week number (1–53). Week 1 is the week containing the first
+ * Thursday of the year; Monday-based.
+ */
+function isoWeekNumber(d: Date): number {
+  const u = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()))
+  const day = u.getUTCDay() || 7
+  u.setUTCDate(u.getUTCDate() + 4 - day)
+  const yearStart = Date.UTC(u.getUTCFullYear(), 0, 1)
+  return Math.ceil(((u.getTime() - yearStart) / 86400000 + 1) / 7)
 }
 
 const SPACER_PREFIX = '__spacer_'
@@ -90,8 +135,9 @@ function toGanttTasks(project: Project, expandedItemIds: ReadonlySet<string>, ed
   return tasks
 }
 
-export function GanttChart({ project, scrollContainerRef, onItemClick, onItemDoubleClick }: GanttChartProps) {
+export function GanttChart({ project, scrollContainerRef, zoomPct = 0, onItemClick, onItemDoubleClick }: GanttChartProps) {
   const hostRef = useRef<HTMLDivElement>(null)
+  const wrapperRef = useRef<HTMLDivElement>(null)
   const ganttRef = useRef<Gantt | null>(null)
   const clickRef = useRef(onItemClick)
   clickRef.current = onItemClick
@@ -102,10 +148,37 @@ export function GanttChart({ project, scrollContainerRef, onItemClick, onItemDou
   const setHoveredItem = usePlanningStore((s) => s.setHoveredItem)
   const expandedItemIds = usePlanningStore((s) => s.expandedItemIds)
   const editorRowHeights = usePlanningStore((s) => s.editorRowHeights)
+  // Width of the visible gantt viewport (the wrapper element). Drives the
+  // column_width calculation alongside `zoomPct`. Tracked via ResizeObserver
+  // so the calendar stays correctly fitted when the split handle is dragged
+  // or the window is resized.
+  const [panelWidth, setPanelWidth] = useState(0)
+  // Live refs so the patched `update_view_scale` (installed once at
+  // construction) always reads the latest values without needing to be
+  // re-bound across renders.
+  const columnWidthRef = useRef(38)
+  const viewModeRef = useRef<GanttViewMode>('Day')
   // The id of the bar the user pressed down on. Used to ignore the cascaded
   // date_change events that frappe-gantt emits for dependent bars it shifted
   // along — only the bar actually grabbed by the user should push an edit.
   const draggedIdRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    const el = wrapperRef.current
+    if (!el) return
+    setPanelWidth(el.clientWidth)
+    const ro = new ResizeObserver((entries) => {
+      const e = entries[0]
+      if (!e) return
+      setPanelWidth(e.contentRect.width)
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+
+  const { viewMode, columnWidth } = computeZoomLayout(zoomPct, panelWidth)
+  columnWidthRef.current = columnWidth
+  viewModeRef.current = viewMode
 
   useEffect(() => {
     if (!hostRef.current) return
@@ -117,10 +190,11 @@ export function GanttChart({ project, scrollContainerRef, onItemClick, onItemDou
     }
     if (!ganttRef.current) {
       ganttRef.current = new Gantt(hostRef.current, tasks, {
-        view_mode: 'Day',
+        view_mode: viewMode,
         bar_height: GANTT_BAR_HEIGHT,
         padding: GANTT_BAR_PADDING,
         header_height: GANTT_HEADER_HEIGHT,
+        column_width: columnWidth,
         on_click: (t) => {
           if (isSpacerId(t.id)) return
           clickRef.current?.(t.id)
@@ -142,13 +216,40 @@ export function GanttChart({ project, scrollContainerRef, onItemClick, onItemDou
           const col = (this as unknown as { options: { column_width: number } }).options.column_width
           return Math.round(dx / col) * col
         }
+      // frappe-gantt's `update_view_scale` resets `column_width` and `step`
+      // to hardcoded defaults on every refresh (see
+      // node_modules/frappe-gantt/src/index.js `update_view_scale`). Override
+      // it so our zoom-driven values for the active view mode survive
+      // subsequent refresh() calls.
+      ;(ganttRef.current as unknown as {
+        update_view_scale(mode: string): void
+        options: { step: number; column_width: number; view_mode: string }
+      }).update_view_scale = function (mode: string) {
+        const m = (mode as GanttViewMode) || viewModeRef.current
+        this.options.view_mode = m
+        this.options.step = m === 'Week' ? 24 * 7 : 24
+        this.options.column_width = columnWidthRef.current
+      }
+      // The frappe-gantt constructor runs `change_view_mode` internally before
+      // we get a chance to patch `update_view_scale`, so the initial render
+      // uses the hardcoded default column_width. Refresh once now so the
+      // patched scale takes effect on this first render.
+      ganttRef.current.refresh(tasks)
     } else {
+      ganttRef.current.options.view_mode = viewMode
       ganttRef.current.refresh(tasks)
     }
     syncSvgWidth(hostRef.current)
-    shadeNonWorkingDays(hostRef.current, project, ganttRef.current)
+    // Always clear stale overlays from the previous render — Week mode skips
+    // per-day shading entirely, and Day mode rebuilds them below.
+    hostRef.current.querySelectorAll('svg .non-working-overlay').forEach((n) => n.remove())
+    if (viewMode === 'Day') {
+      shadeNonWorkingDays(hostRef.current, project, ganttRef.current)
+    } else {
+      rewriteWeekHeaders(hostRef.current, ganttRef.current)
+    }
     pinHeader(hostRef.current, scrollContainerRef?.current ?? hostRef.current.parentElement)
-  }, [project, expandedItemIds, editorRowHeights, scrollContainerRef])
+  }, [project, expandedItemIds, editorRowHeights, scrollContainerRef, columnWidth, viewMode])
 
   // Keep the date header visually fixed when the user scrolls vertically. The
   // header pieces (`.grid-header` rect + `.upper-text` / `.lower-text` date
@@ -218,7 +319,7 @@ export function GanttChart({ project, scrollContainerRef, onItemClick, onItemDou
   }, [setHoveredItem])
 
   return (
-    <div className="gantt-host overflow-x-auto">
+    <div ref={wrapperRef} className="gantt-host overflow-x-auto">
       <div ref={hostRef} />
     </div>
   )
@@ -297,6 +398,28 @@ function handleBarDateChange(
     return
   }
   state.updateItem(taskId, { startDate: newStartISO, estimationMD })
+}
+
+/**
+ * In Week view mode, frappe-gantt renders the lower header text as the
+ * day-of-month of each week's first day (e.g. "5" or "5 Jan"). When the user
+ * has zoomed out enough to see calendar weeks, replace those labels with the
+ * ISO 8601 week number ("W18") so the header reads as a calendar-week ruler.
+ *
+ * `gantt.dates` is the ordered array of column anchor dates that frappe-gantt
+ * computes during `setup_dates`; the rendered `.lower-text` elements are
+ * created in the same order, so index-aligning the two is reliable.
+ */
+function rewriteWeekHeaders(host: HTMLElement, gantt: Gantt | null) {
+  if (!gantt) return
+  const dates = (gantt as unknown as { dates?: Date[] }).dates
+  if (!dates || dates.length === 0) return
+  const lowers = host.querySelectorAll<SVGTextElement>('svg .lower-text')
+  lowers.forEach((el, i) => {
+    const d = dates[i]
+    if (!d) return
+    el.textContent = `W${isoWeekNumber(d)}`
+  })
 }
 
 /**
