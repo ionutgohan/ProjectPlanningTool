@@ -240,6 +240,7 @@ export function GanttChart({ project, scrollContainerRef, zoomPct = 0, onItemCli
       ganttRef.current.refresh(tasks)
     }
     syncSvgWidth(hostRef.current)
+    reshapeMilestones(hostRef.current)
     // Always clear stale overlays from the previous render — Week mode skips
     // per-day shading entirely, and Day mode rebuilds them below.
     hostRef.current.querySelectorAll('svg .non-working-overlay').forEach((n) => n.remove())
@@ -446,6 +447,28 @@ function highlightSelectedArrows(host: HTMLElement, selectedId: string | null) {
  * make the timeline look wrong. Sync the SVG width to the actual grid content
  * width after every refresh so both grow and shrink reliably.
  */
+/**
+ * Resize milestone bars to a square the size of the bar height, centred on the
+ * milestone's date column. The CSS then rotates each square 45° to render an
+ * equal-sided rhombus. Without this, the underlying rect inherits the current
+ * column width, so the rotated diamond stretches into a parallelogram as the
+ * user zooms.
+ */
+function reshapeMilestones(host: HTMLElement) {
+  const wrappers = host.querySelectorAll<SVGGElement>('.bar-wrapper.gantt-milestone')
+  const size = GANTT_BAR_HEIGHT
+  wrappers.forEach((w) => {
+    const bar = w.querySelector<SVGRectElement>('.bar')
+    if (!bar) return
+    const x = Number(bar.getAttribute('x') ?? 0)
+    const width = Number(bar.getAttribute('width') ?? 0)
+    const centerX = x + width / 2
+    bar.setAttribute('x', String(centerX - size / 2))
+    bar.setAttribute('width', String(size))
+    bar.setAttribute('height', String(size))
+  })
+}
+
 function syncSvgWidth(host: HTMLElement) {
   const svg = host.querySelector<SVGSVGElement>('svg')
   if (!svg) return
