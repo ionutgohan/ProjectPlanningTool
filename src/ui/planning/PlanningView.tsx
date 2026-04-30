@@ -1,14 +1,59 @@
-import { useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { usePlanningStore } from '@/store/planningStore'
 import { GanttChart } from '@/ui/gantt/GanttChart'
 import { ItemTreeBody, ItemTreeToolbar } from './ItemTree'
 import { RescheduleDialog } from './RescheduleDialog'
+
+const SPLIT_STORAGE_KEY = 'planning.splitPct'
+const MIN_PCT = 15
+const MAX_PCT = 85
+const DEFAULT_PCT = 40
+
+function loadInitialSplit(): number {
+  if (typeof window === 'undefined') return DEFAULT_PCT
+  const raw = window.localStorage.getItem(SPLIT_STORAGE_KEY)
+  const parsed = raw ? Number(raw) : NaN
+  if (!Number.isFinite(parsed)) return DEFAULT_PCT
+  return Math.min(MAX_PCT, Math.max(MIN_PCT, parsed))
+}
 
 export function PlanningView() {
   const project = usePlanningStore((s) => s.project)
   const setSelectedItem = usePlanningStore((s) => s.setSelectedItem)
   const toggleExpanded = usePlanningStore((s) => s.toggleExpanded)
   const scrollerRef = useRef<HTMLDivElement>(null)
+  const splitContainerRef = useRef<HTMLDivElement>(null)
+  const [splitPct, setSplitPct] = useState<number>(loadInitialSplit)
+  const [isDragging, setIsDragging] = useState(false)
+
+  useEffect(() => {
+    window.localStorage.setItem(SPLIT_STORAGE_KEY, String(splitPct))
+  }, [splitPct])
+
+  useEffect(() => {
+    if (!isDragging) return
+    const handleMove = (e: MouseEvent) => {
+      const container = splitContainerRef.current
+      if (!container) return
+      const rect = container.getBoundingClientRect()
+      if (rect.width <= 0) return
+      const pct = ((e.clientX - rect.left) / rect.width) * 100
+      setSplitPct(Math.min(MAX_PCT, Math.max(MIN_PCT, pct)))
+    }
+    const handleUp = () => setIsDragging(false)
+    window.addEventListener('mousemove', handleMove)
+    window.addEventListener('mouseup', handleUp)
+    const prevCursor = document.body.style.cursor
+    const prevSelect = document.body.style.userSelect
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+    return () => {
+      window.removeEventListener('mousemove', handleMove)
+      window.removeEventListener('mouseup', handleUp)
+      document.body.style.cursor = prevCursor
+      document.body.style.userSelect = prevSelect
+    }
+  }, [isDragging])
 
   /**
    * Clears the selection when the click didn't land on a planning item.
@@ -22,19 +67,37 @@ export function PlanningView() {
     if (target.closest('[data-item-id]')) return
     if (target.closest('.bar-wrapper[data-id]')) return
     if (target.closest('button, input, textarea, select, label, a')) return
+    if (target.closest('[data-split-handle]')) return
     setSelectedItem(null)
   }
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden" onClick={handleBackgroundClick}>
       <div ref={scrollerRef} className="flex-1 overflow-y-auto">
-        <div className="flex min-h-full items-stretch">
-          <div className="w-[40%] min-w-[320px] border-r flex-shrink-0 flex flex-col">
+        <div ref={splitContainerRef} className="flex min-h-full items-stretch">
+          <div
+            className="flex-shrink-0 flex flex-col"
+            style={{ width: `${splitPct}%`, minWidth: 240 }}
+          >
             <div className="sticky top-0 z-20">
               <ItemTreeToolbar />
             </div>
             <ItemTreeBody />
           </div>
+          <div
+            data-split-handle
+            role="separator"
+            aria-orientation="vertical"
+            onMouseDown={(e) => {
+              e.preventDefault()
+              setIsDragging(true)
+            }}
+            onDoubleClick={() => setSplitPct(DEFAULT_PCT)}
+            className={`flex-shrink-0 w-1 cursor-col-resize bg-slate-200 hover:bg-blue-400 transition-colors ${
+              isDragging ? 'bg-blue-500' : ''
+            }`}
+            title="Drag to resize · Double-click to reset"
+          />
           <div className="flex-1 min-w-0">
             <GanttChart
               project={project}

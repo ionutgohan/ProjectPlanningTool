@@ -305,10 +305,13 @@ function Row({ item, depth, isSelected, bounds, onRowClick, onRowDoubleClick, on
       ) : (
         <span className="w-4" />
       )}
-      <span>{icon}</span>
-      <span className="font-medium truncate flex-1">{item.name || '(unnamed)'}</span>
+      <span className="flex-shrink-0">{icon}</span>
+      <span className="font-medium truncate flex-auto min-w-0">{item.name || '(unnamed)'}</span>
       {bounds && (
-        <span className="text-xs text-gray-500 tabular-nums">
+        <span
+          className="text-xs text-gray-500 tabular-nums whitespace-nowrap overflow-hidden min-w-0"
+          style={{ flexShrink: 9999 }}
+        >
           {bounds.startDate}
           {bounds.startDate !== bounds.endDate && ` → ${bounds.endDate}`}
           {item.type !== 'milestone' && ` · ${bounds.estimationMD}MD`}
