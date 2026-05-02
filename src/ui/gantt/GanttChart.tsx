@@ -241,14 +241,17 @@ export function GanttChart({ project, scrollContainerRef, zoomPct = 0, onItemCli
     }
     syncSvgWidth(hostRef.current)
     reshapeMilestones(hostRef.current)
-    // Always clear stale overlays from the previous render — Week mode skips
-    // per-day shading entirely, and Day mode rebuilds them below.
-    hostRef.current.querySelectorAll('svg .non-working-overlay').forEach((n) => n.remove())
+    // Always clear stale calendar overlays from the previous render — view-mode
+    // changes can drop entire categories, so wipe before rebuilding.
+    hostRef.current
+      .querySelectorAll('svg .non-working-overlay, svg .month-divider, svg .week-divider, svg .week-holiday-marker')
+      .forEach((n) => n.remove())
     if (viewMode === 'Day') {
       shadeNonWorkingDays(hostRef.current, project, ganttRef.current)
     } else {
       rewriteWeekHeaders(hostRef.current, ganttRef.current)
     }
+    drawCalendarSeparators(hostRef.current, project, ganttRef.current, viewMode)
     pinHeader(hostRef.current, scrollContainerRef?.current ?? hostRef.current.parentElement)
   }, [project, expandedItemIds, editorRowHeights, scrollContainerRef, columnWidth, viewMode])
 
@@ -517,88 +520,184 @@ function pinHeader(host: HTMLElement, scroller: HTMLElement | null) {
   }
 }
 
-function shadeNonWorkingDays(host: HTMLElement, project: Project, gantt: Gantt | null) {
-  // frappe-gantt renders <rect class="grid-row"> and header dates. Non-working days are
-  // approximated by adding vertical tint rects aligned with day columns.
-  const svg = host.querySelector('svg')
-  if (!svg) return
-  // Remove prior overlays
-  svg.querySelectorAll('.non-working-overlay').forEach((n) => n.remove())
+/**
+ * Geometry shared by all column-aligned overlays (shading, dividers, markers).
+ *
+ * - `firstTickX` / `columnWidth`: derived from the first two `.tick` elements
+ *   frappe-gantt renders. Each tick's x lives in either an `x1` attribute (line)
+ *   or the `M <x>` token of a `path d=`.
+ * - `ganttStart`: the chart's internal start date (frappe-gantt pads ahead of
+ *   the first task, so this is not the project's min date).
+ * - `totalCols`: number of date columns in the grid.
+ * - `bodyY` / `bodyH`: vertical band of the chart body, excluding the header.
+ */
+interface ColumnGeometry {
+  firstTickX: number
+  columnWidth: number
+  ganttStart: Date
+  totalCols: number
+  bodyY: number
+  bodyH: number
+  headerH: number
+}
 
-  const headerDates = svg.querySelectorAll<SVGTextElement>('.lower-text')
-  const firstRow = svg.querySelector<SVGRectElement>('.grid-row')
-  if (!firstRow) return
-  const gridHeight = Number(svg.querySelector<SVGGElement>('.grid')?.getAttribute('data-height') ?? 0) ||
-    Number(svg.getAttribute('height') ?? 0)
-
-  // Build y + height from grid background, but skip the grid-header strip so
-  // the white header rect doesn't paint over our shading.
-  const bg = svg.querySelector<SVGRectElement>('.grid-background')
-  const header = svg.querySelector<SVGRectElement>('.grid-header')
-  const headerH = header ? Number(header.getAttribute('height') ?? 0) : 0
-  const bgY = bg ? Number(bg.getAttribute('y') ?? 0) : 0
-  const bgH = bg ? Number(bg.getAttribute('height') ?? gridHeight) : gridHeight
-  const yBase = bgY + headerH
-  const h = Math.max(0, bgH - headerH)
-
-  headerDates.forEach((text) => {
-    const x = Number(text.getAttribute('x') ?? 0)
-    const dateAttr = text.textContent?.trim() ?? ''
-    // lower-text is like "1" or "Mon" depending on mode — we use Day mode, so it's day-of-month.
-    // We instead infer the date from a sibling rect, if possible. For simplicity, skip precise mapping.
-    // Use a per-column approach: check computed iso from column index instead.
-    void x
-    void dateAttr
-  })
-
-  // Iterate grid columns and infer date by index from first day.
-  // frappe-gantt renders ticks as <path d="M <x> <y> v <h>"> in Day mode.
-  // We parse x out of either a path's `d` attribute or a line's `x1` attribute.
+function readColumnGeometry(svg: SVGSVGElement, gantt: Gantt | null): ColumnGeometry | null {
   const ticks = svg.querySelectorAll<SVGGraphicsElement>('.tick')
-  if (ticks.length < 2) return
+  if (ticks.length < 2) return null
   const tickX = (el: Element): number => {
     const x1 = el.getAttribute('x1')
     if (x1 != null) return Number(x1)
     const d = el.getAttribute('d') ?? ''
-    // Match "M <x> <y> ..." — x is the first numeric token after M.
     const m = d.match(/M\s*(-?\d+(?:\.\d+)?)/)
     return m ? Number(m[1]) : 0
   }
   const firstTickX = tickX(ticks[0]!)
   const columnWidth = tickX(ticks[1]!) - firstTickX
-  if (columnWidth <= 0) return
-  // Anchor column 0 to the Gantt instance's internal start date. frappe-gantt
-  // pads a week or two before the first task, so the project's min date is not
-  // column 0 — reading it off the instance is the only reliable source.
+  if (columnWidth <= 0) return null
   const ganttStart = (gantt as unknown as { gantt_start?: Date } | null)?.gantt_start
-  if (!ganttStart) return
-  const totalCols = ticks.length
-  const startMs = new Date(ganttStart.getFullYear(), ganttStart.getMonth(), ganttStart.getDate()).getTime()
+  if (!ganttStart) return null
+
+  const bg = svg.querySelector<SVGRectElement>('.grid-background')
+  const header = svg.querySelector<SVGRectElement>('.grid-header')
+  const headerH = header ? Number(header.getAttribute('height') ?? 0) : 0
+  const bgY = bg ? Number(bg.getAttribute('y') ?? 0) : 0
+  const fallbackH = Number(svg.querySelector<SVGGElement>('.grid')?.getAttribute('data-height') ?? 0) ||
+    Number(svg.getAttribute('height') ?? 0)
+  const bgH = bg ? Number(bg.getAttribute('height') ?? fallbackH) : fallbackH
+  const bodyY = bgY + headerH
+  const bodyH = Math.max(0, bgH - headerH)
+
+  return { firstTickX, columnWidth, ganttStart, totalCols: ticks.length, bodyY, bodyH, headerH }
+}
+
+function columnDate(geom: ColumnGeometry, i: number, daysPerColumn = 1): Date {
+  const startMs = new Date(
+    geom.ganttStart.getFullYear(),
+    geom.ganttStart.getMonth(),
+    geom.ganttStart.getDate(),
+  ).getTime()
+  return new Date(startMs + i * daysPerColumn * 24 * 60 * 60 * 1000)
+}
+
+function localISO(d: Date) {
+  return isoDate(
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`,
+  )
+}
+
+function shadeNonWorkingDays(host: HTMLElement, project: Project, gantt: Gantt | null) {
+  // Vertical tint rects aligned with day columns, derived from `isWorkingDay`.
+  const svg = host.querySelector('svg')
+  if (!svg) return
+  const geom = readColumnGeometry(svg, gantt)
+  if (!geom) return
 
   const ns = 'http://www.w3.org/2000/svg'
   const gridEl = svg.querySelector('.grid')
-  // Insert overlays after the grid-header rect so that the header's own white
-  // fill doesn't paint over them; tick lines and bars still render on top
-  // because they appear later in the DOM.
+  // Insert overlays after the grid-header rect so the header's white fill
+  // doesn't paint over them; tick lines and bars still render on top because
+  // they appear later in the DOM.
   const anchor = gridEl?.querySelector('.grid-header')?.nextSibling ?? null
-  for (let i = 0; i < totalCols; i++) {
-    const dayMs = startMs + i * 24 * 60 * 60 * 1000
-    const d = new Date(dayMs)
-    // Build ISO from local parts to avoid UTC offset rolling the date back by a day.
-    const iso = isoDate(
-      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`,
-    )
+  for (let i = 0; i < geom.totalCols; i++) {
+    const d = columnDate(geom, i)
+    const iso = localISO(d)
     if (isWorkingDay(iso, project.calendar)) continue
     const isHoliday = project.calendar.holidays.includes(iso)
     const rect = document.createElementNS(ns, 'rect')
     rect.setAttribute('class', 'non-working-overlay')
-    rect.setAttribute('x', String(firstTickX + i * columnWidth))
-    rect.setAttribute('y', String(yBase))
-    rect.setAttribute('width', String(columnWidth))
-    rect.setAttribute('height', String(h))
-    // Holidays → light red (red-200); weekends/other non-workdays → light orange (orange-200).
-    rect.setAttribute('fill', isHoliday ? '#fecaca' : '#fed7aa')
+    rect.setAttribute('x', String(geom.firstTickX + i * geom.columnWidth))
+    rect.setAttribute('y', String(geom.bodyY))
+    rect.setAttribute('width', String(geom.columnWidth))
+    rect.setAttribute('height', String(geom.bodyH))
+    // Holidays → light red (red-100); weekends/other non-workdays → slate-100.
+    rect.setAttribute('fill', isHoliday ? '#fee2e2' : '#f1f5f9')
     rect.setAttribute('pointer-events', 'none')
     if (gridEl) gridEl.insertBefore(rect, anchor)
+  }
+}
+
+/**
+ * Draw vertical separators that give the calendar a visual hierarchy:
+ *
+ * - Solid month dividers in both Day and Week mode (column whose anchor falls
+ *   on the 1st of a month, or whose 7-day span crosses the 1st in Week mode).
+ * - Dashed week dividers on Mondays in Day mode (skipped where a month
+ *   divider already lands on that column).
+ * - In Week mode, a thin red bar under the week label for any week whose
+ *   7-day span includes a configured holiday.
+ */
+function drawCalendarSeparators(
+  host: HTMLElement,
+  project: Project,
+  gantt: Gantt | null,
+  viewMode: GanttViewMode,
+) {
+  const svg = host.querySelector('svg')
+  if (!svg) return
+  const geom = readColumnGeometry(svg, gantt)
+  if (!geom) return
+
+  const ns = 'http://www.w3.org/2000/svg'
+  const gridEl = svg.querySelector('.grid')
+  if (!gridEl) return
+  const anchor = gridEl.querySelector('.grid-header')?.nextSibling ?? null
+
+  const yTop = geom.bodyY
+  const yBottom = geom.bodyY + geom.bodyH
+  const daysPerColumn = viewMode === 'Week' ? 7 : 1
+
+  for (let i = 0; i < geom.totalCols; i++) {
+    const d = columnDate(geom, i, daysPerColumn)
+    const x = geom.firstTickX + i * geom.columnWidth
+
+    let isMonthBoundary = false
+    if (viewMode === 'Day') {
+      isMonthBoundary = d.getDate() === 1
+    } else {
+      // Week column: a month boundary lands inside [d, d+6] but is not the start.
+      for (let j = 0; j < 7; j++) {
+        const cd = new Date(d.getFullYear(), d.getMonth(), d.getDate() + j)
+        if (cd.getDate() === 1) { isMonthBoundary = true; break }
+      }
+    }
+
+    if (isMonthBoundary) {
+      const line = document.createElementNS(ns, 'line')
+      line.setAttribute('class', 'month-divider')
+      line.setAttribute('x1', String(x))
+      line.setAttribute('x2', String(x))
+      line.setAttribute('y1', String(yTop))
+      line.setAttribute('y2', String(yBottom))
+      line.setAttribute('pointer-events', 'none')
+      gridEl.insertBefore(line, anchor)
+    } else if (viewMode === 'Day' && d.getDay() === 1) {
+      const line = document.createElementNS(ns, 'line')
+      line.setAttribute('class', 'week-divider')
+      line.setAttribute('x1', String(x))
+      line.setAttribute('x2', String(x))
+      line.setAttribute('y1', String(yTop))
+      line.setAttribute('y2', String(yBottom))
+      line.setAttribute('pointer-events', 'none')
+      gridEl.insertBefore(line, anchor)
+    }
+
+    if (viewMode === 'Week' && project.calendar.holidays.length > 0) {
+      let hasHoliday = false
+      for (let j = 0; j < 7; j++) {
+        const cd = new Date(d.getFullYear(), d.getMonth(), d.getDate() + j)
+        if (project.calendar.holidays.includes(localISO(cd))) { hasHoliday = true; break }
+      }
+      if (hasHoliday) {
+        const marker = document.createElementNS(ns, 'rect')
+        marker.setAttribute('class', 'week-holiday-marker')
+        marker.setAttribute('x', String(x))
+        marker.setAttribute('y', String(geom.bodyY - 3))
+        marker.setAttribute('width', String(geom.columnWidth))
+        marker.setAttribute('height', '3')
+        marker.setAttribute('fill', '#dc2626')
+        marker.setAttribute('pointer-events', 'none')
+        gridEl.insertBefore(marker, anchor)
+      }
+    }
   }
 }

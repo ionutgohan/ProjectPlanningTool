@@ -54,3 +54,36 @@ body {
 .gantt-host .bar-wrapper.spacer-row {
   display: none;
 }
+
+/* Calendar hierarchy: month → week → day. Dividers and markers are injected
+   by drawCalendarSeparators() in GanttChart.tsx. */
+.gantt-host svg .month-divider {
+  stroke: #94a3b8;
+  stroke-width: 1.5;
+}
+
+.gantt-host svg .week-divider {
+  stroke: #e2e8f0;
+  stroke-width: 1;
+  stroke-dasharray: 2 2;
+}
+
+.gantt-host svg .week-holiday-marker {
+  fill: #dc2626;
+}
+
+/* Header typography: month label heavier than the day/week label so the eye
+   reads the header hierarchically. */
+.gantt-host svg .upper-text {
+  font-weight: 600;
+  fill: #0f172a;
+}
+
+.gantt-host svg .lower-text {
+  fill: #475569;
+}
+
+.gantt-host svg .grid-header {
+  stroke: #cbd5e1;
+  stroke-width: 1;
+}
