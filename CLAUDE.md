@@ -44,13 +44,15 @@ The user plans work by creating **tasks**, **groups**, and **milestones**, wirin
 ```bash
 npm install          # install deps
 npm run dev          # start Vite dev server (http://localhost:5173)
-npm run build        # production build
+npm run build        # production build — emits a single self-contained HTML (vite-plugin-singlefile)
 npm run preview      # preview production build
 npm run test         # run Vitest in watch mode
 npm run test:run     # single-pass test run (CI)
 npm run lint         # ESLint
-npm run typecheck    # tsc --noEmit
+npm run typecheck    # tsc -b --noEmit (project-references mode)
 ```
+
+The build artifact is itself a single inlined HTML — the whole app, ready to email or drop on any static host. This is distinct from the user-triggered "Save As" / Export HTML action (see §6.6), which bakes the *current plan* into a copy of that same HTML.
 
 Run a single test:
 ```bash
@@ -74,7 +76,8 @@ src/
     allocation.ts     # Resource over-allocation detection
     tree.ts           # Tree operations (move, reparent, flatten)
     serialization.ts  # JSON import/export + schema validation
-    htmlExport.ts     # Standalone HTML export of the plan
+    standaloneExport.ts  # Builds a single-file HTML with the current plan baked in
+    embeddedProject.ts   # Reads the project baked into the page (paired with vite-plugin-singlefile)
   store/
     planningStore.ts  # Zustand store, selectors, actions
     lastProjectHandle.ts # IndexedDB-backed File System Access handle persistence
@@ -194,7 +197,7 @@ Do **not** silently auto-reschedule. Do **not** leave the plan in an inconsisten
 
 ### 6.6 Persistence
 - No autosave to a server — there isn't one.
-- User actions: **Import JSON**, **Export JSON**, **Save** (write back to the opened file), **Export HTML** (read-only single-file snapshot).
+- User actions: **Import project**, **Export JSON**, **Save** (write back to the opened file), **Save As** (downloads a single-file HTML — the full editable tool with the current plan baked in via `src/domain/standaloneExport.ts`; on next launch `embeddedProject.ts` rehydrates from that payload), **New project** (blank slate).
 - Uses the **File System Access API** (Chromium) when available for native open/save without re-prompting. Firefox/Safari fall back to `<input type="file">` + download. `isFileSystemAccessSupported()` in `src/store/lastProjectHandle.ts` is the feature check.
 - The last-opened `FileSystemFileHandle` is cached in IndexedDB so the project auto-restores on next launch. Permission typically resets each session — when it does, TopNav shows a "Reopen" button so the re-request happens inside a user gesture.
 - On import, validate against the schema (version check, referential integrity: every `parentGroupId`, `predecessorId`, `successorId`, `resourceId` must resolve). Reject with specific error messages.
@@ -205,7 +208,7 @@ Do **not** silently auto-reschedule. Do **not** leave the plan in an inconsisten
 ## 7. UI / UX
 
 ### 7.1 Layout
-- Top nav: **Planning** | **Resources** | project name | Import | Export
+- Top nav tabs: **Planning** | **Resources** | **Holidays**, then editable project name, then action buttons: **Reopen** (only when a remembered file needs re-permission), **Save** (only when a file handle is wired), **New project**, **Import project**, **Save As** (standalone HTML), **Export JSON**.
 - Landing page = Planning view.
 
 ### 7.2 Planning view
@@ -222,6 +225,8 @@ Do **not** silently auto-reschedule. Do **not** leave the plan in an inconsisten
 ### 7.4 Gantt
 - Wrap `frappe-gantt` in a `<GanttChart />` component with a narrow prop surface (`items`, `dependencies`, `onItemClick`). All business logic stays in the domain layer.
 - The library is an implementation detail; do not leak its types into the domain.
+- A `<GanttToolbar />` sibling owns the zoom slider (`3 mo` ↔ `2 wk`). **Display-only state — zoom level, scroll position, etc. — lives in the wrapper or the parent view, never in the Zustand store and never in the domain.** The store is for project data; UI ergonomics are component-local.
+- Milestones render as diamond markers with their own styling pass — see `src/ui/gantt/GanttChart.tsx` and `constants.ts` before tweaking sizes.
 
 ---
 
@@ -256,7 +261,7 @@ Do **not** implement any of the following without explicit user request:
 - Any backend, database, or cloud sync.
 - Baselines, critical path highlighting, earned-value metrics, cost tracking.
 - Import from MS Project `.mpp` / `.xml` (JSON only).
-- PDF export and printing. (A read-only **HTML export** exists via `src/domain/htmlExport.ts` and is in scope.)
+- PDF export and printing. (A standalone **HTML export** exists via `src/domain/standaloneExport.ts` and is in scope — note it produces the *full editable tool* with the plan baked in, not a read-only snapshot.)
 - Mobile-optimized UI (desktop-first).
 - i18n / l10n — English only for v1.
 
