@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { usePlanningStore } from '@/store/planningStore'
 import { GanttChart } from '@/ui/gantt/GanttChart'
 import { GanttToolbar } from '@/ui/gantt/GanttToolbar'
+import { GANTT_HEADER_HEIGHT } from '@/ui/gantt/constants'
 import { ItemTreeBody, ItemTreeToolbar } from './ItemTree'
 import { RescheduleDialog } from './RescheduleDialog'
 
@@ -85,6 +86,7 @@ export function PlanningView() {
     if (target.closest('.bar-wrapper[data-id]')) return
     if (target.closest('button, input, textarea, select, label, a')) return
     if (target.closest('[data-split-handle]')) return
+    if (target.closest('[data-tree-header-spacer]')) return
     setSelectedItem(null)
   }
 
@@ -99,6 +101,12 @@ export function PlanningView() {
             <div className="sticky top-0 z-20">
               <ItemTreeToolbar />
             </div>
+            <div
+              data-tree-header-spacer
+              aria-hidden
+              className="sticky z-10 bg-white border-b border-slate-200"
+              style={{ top: GANTT_HEADER_HEIGHT, height: GANTT_HEADER_HEIGHT }}
+            />
             <ItemTreeBody />
           </div>
           <div
