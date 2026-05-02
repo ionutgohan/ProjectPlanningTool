@@ -11,7 +11,8 @@
       "Bash(git push *)",
       "Read(//opt/homebrew/bin/**)",
       "Read(//usr/local/bin/**)",
-      "Bash(command -v gh)"
+      "Bash(command -v gh)",
+      "Bash(git -C /Users/ionut/Documents/00_Programming/PlanningTool show HEAD~5:CLAUDE.md)"
     ]
   }
 }
