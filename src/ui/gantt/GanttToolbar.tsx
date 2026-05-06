@@ -1,4 +1,5 @@
 import { Button } from '@/ui/common/Button'
+import { usePlanningStore } from '@/store/planningStore'
 import { GANTT_HEADER_HEIGHT } from './constants'
 
 interface GanttToolbarProps {
@@ -7,6 +8,8 @@ interface GanttToolbarProps {
 }
 
 export function GanttToolbar({ zoomPct, onZoomChange }: GanttToolbarProps) {
+  const undo = usePlanningStore((s) => s.undo)
+  const undoDepth = usePlanningStore((s) => s.past.length)
   return (
     <div
       className="border-b px-2 flex items-center gap-2 bg-white box-border"
@@ -18,7 +21,9 @@ export function GanttToolbar({ zoomPct, onZoomChange }: GanttToolbarProps) {
             variant="secondary"
             size="sm"
             aria-label="Undo"
-            title="Undo"
+            title={undoDepth === 0 ? 'Nothing to undo' : `Undo last change (${undoDepth} available)`}
+            onClick={undo}
+            disabled={undoDepth === 0}
             className="rounded-full !px-0 w-8 h-8 justify-center text-base leading-none"
           >
             ↶
