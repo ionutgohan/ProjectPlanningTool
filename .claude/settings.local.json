@@ -12,7 +12,12 @@
       "Read(//opt/homebrew/bin/**)",
       "Read(//usr/local/bin/**)",
       "Bash(command -v gh)",
-      "Bash(git -C /Users/ionut/Documents/00_Programming/PlanningTool show HEAD~5:CLAUDE.md)"
+      "Bash(git -C /Users/ionut/Documents/00_Programming/PlanningTool show HEAD~5:CLAUDE.md)",
+      "Bash(lsof -i -P -sTCP:LISTEN)",
+      "Bash(lsof -i :5174 -sTCP:LISTEN)",
+      "Bash(git check-ignore *)",
+      "Bash(git fetch *)",
+      "Bash(git pull *)"
     ]
   }
 }

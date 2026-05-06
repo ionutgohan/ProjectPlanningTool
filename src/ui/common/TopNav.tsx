@@ -21,6 +21,8 @@ export function TopNav() {
   const exportStandaloneHTML = usePlanningStore((s) => s.exportStandaloneHTML)
   const importJSON = usePlanningStore((s) => s.importJSON)
   const resetProject = usePlanningStore((s) => s.resetProject)
+  const undo = usePlanningStore((s) => s.undo)
+  const undoDepth = usePlanningStore((s) => s.past.length)
   const resumeFileName = usePlanningStore((s) => s.resumeFileName)
   const setResumeFileName = usePlanningStore((s) => s.setResumeFileName)
   const currentFileHandle = usePlanningStore((s) => s.currentFileHandle)
@@ -172,6 +174,15 @@ export function TopNav() {
             Save
           </Button>
         )}
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={undo}
+          disabled={undoDepth === 0}
+          title={undoDepth === 0 ? 'Nothing to undo' : `Undo last change (${undoDepth} available)`}
+        >
+          Undo
+        </Button>
         <Button variant="secondary" size="sm" onClick={handleNew} title="Start a blank new project">New project</Button>
         <Button variant="secondary" size="sm" onClick={handleImportClick}>Import project</Button>
         <Button variant="secondary" size="sm" onClick={handleExportHTML} title="Single self-contained HTML — full editable tool with this plan baked in">Save As</Button>
