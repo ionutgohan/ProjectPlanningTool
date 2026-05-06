@@ -32,8 +32,12 @@ export interface PendingReschedule {
   snapshot: Project
 }
 
+const HISTORY_LIMIT = 5
+
 interface PlanningState {
   project: Project
+  /** Recent project snapshots for undo, oldest first. Capped at HISTORY_LIMIT. */
+  past: Project[]
   view: View
   selectedItemId: string | null
   /** Transient hover state — set while the pointer is over an item in the tree
@@ -92,6 +96,9 @@ interface PlanningState {
   confirmReschedule: () => void
   cancelReschedule: () => void
 
+  /** Revert to the most recent snapshot in `past`. No-op when `past` is empty. */
+  undo: () => void
+
   importJSON: (text: string) => boolean
   exportJSON: () => string
   exportStandaloneHTML: () => string
@@ -102,6 +109,13 @@ interface PlanningState {
 
 function uuid(): string {
   return crypto.randomUUID()
+}
+
+/** Append the current project to history, dropping the oldest if at capacity. */
+function pushHistory(s: { project: Project; past: Project[] }): Project[] {
+  const next = s.past.length >= HISTORY_LIMIT ? s.past.slice(1) : s.past.slice()
+  next.push(s.project)
+  return next
 }
 
 /** Snapshot bounds map before any edit. */
@@ -160,6 +174,7 @@ function applyWithReschedule(
 
 export const usePlanningStore = create<PlanningState>((set, get) => ({
   project: emptyProject(),
+  past: [],
   view: 'planning',
   selectedItemId: null,
   hoveredItemId: null,
@@ -175,7 +190,7 @@ export const usePlanningStore = create<PlanningState>((set, get) => ({
   setAutoAcceptReschedule: (value) => set({ autoAcceptReschedule: value }),
   setResumeFileName: (name) => set({ resumeFileName: name }),
   setCurrentFileHandle: (handle) => set({ currentFileHandle: handle }),
-  setProjectName: (name) => set((s) => ({ project: { ...s.project, name } })),
+  setProjectName: (name) => set((s) => ({ past: pushHistory(s), project: { ...s.project, name } })),
   setSelectedItem: (id) => set({ selectedItemId: id }),
   setHoveredItem: (id) => set({ hoveredItemId: id }),
   toggleExpanded: (id) =>
@@ -224,15 +239,17 @@ export const usePlanningStore = create<PlanningState>((set, get) => ({
   addItem: (item, index) =>
     set((s) => {
       const items = insertItem(s.project.items, item, item.parentGroupId, index ?? Number.MAX_SAFE_INTEGER)
-      return { project: { ...s.project, items } }
+      return { past: pushHistory(s), project: { ...s.project, items } }
     }),
 
   updateItem: (id, patch) => {
-    const prev = get().project
+    const state = get()
+    const prev = state.project
     const existing = findItem(prev.items, id)
     if (!existing) return
     const merged = { ...existing, ...patch } as PlanningItem
     const nextProject = { ...prev, items: replaceItem(prev.items, id, merged) }
+    set({ past: pushHistory(state) })
     applyWithReschedule(prev, nextProject, id, set, get)
   },
 
@@ -241,18 +258,21 @@ export const usePlanningStore = create<PlanningState>((set, get) => ({
       const items = removeItem(s.project.items, id)
       // Also drop dependencies that referenced it.
       const deps = s.project.dependencies.filter((d) => d.predecessorId !== id && d.successorId !== id)
-      return { project: { ...s.project, items, dependencies: deps } }
+      return { past: pushHistory(s), project: { ...s.project, items, dependencies: deps } }
     }),
 
   moveItem: (id, newParentId, index) => {
-    const prev = get().project
+    const state = get()
+    const prev = state.project
     const items = moveItemInTree(prev.items, id, newParentId, index)
     const nextProject = { ...prev, items }
+    set({ past: pushHistory(state) })
     applyWithReschedule(prev, nextProject, id, set, get)
   },
 
   addDependency: (predecessorId, successorId, type) => {
-    const prev = get().project
+    const state = get()
+    const prev = state.project
     if (predecessorId === successorId) return { ok: false, error: 'An item cannot depend on itself' }
     const dep: Dependency = { id: uuid(), predecessorId, successorId, type }
     const candidateDeps = [...prev.dependencies, dep]
@@ -261,20 +281,23 @@ export const usePlanningStore = create<PlanningState>((set, get) => ({
       return { ok: false, error: `This would create a cycle: ${cycles[0]!.join(' → ')}` }
     }
     const nextProject = { ...prev, dependencies: candidateDeps }
+    set({ past: pushHistory(state) })
     applyWithReschedule(prev, nextProject, successorId, set, get)
     return { ok: true }
   },
 
   removeDependency: (depId) =>
     set((s) => ({
+      past: pushHistory(s),
       project: { ...s.project, dependencies: s.project.dependencies.filter((d) => d.id !== depId) },
     })),
 
   addResource: (resource) =>
-    set((s) => ({ project: { ...s.project, resources: [...s.project.resources, resource] } })),
+    set((s) => ({ past: pushHistory(s), project: { ...s.project, resources: [...s.project.resources, resource] } })),
 
   updateResource: (id, patch) =>
     set((s) => ({
+      past: pushHistory(s),
       project: {
         ...s.project,
         resources: s.project.resources.map((r) => (r.id === id ? { ...r, ...patch } : r)),
@@ -293,6 +316,7 @@ export const usePlanningStore = create<PlanningState>((set, get) => ({
         nextItems = replaceItem(nextItems, item.id, updated)
       }
       return {
+        past: pushHistory(s),
         project: {
           ...s.project,
           items: nextItems,
@@ -307,7 +331,7 @@ export const usePlanningStore = create<PlanningState>((set, get) => ({
       if (!existing || existing.type === 'group') return s
       const existingAllocs = existing.allocations.filter((a) => a.resourceId !== allocation.resourceId)
       const updated = { ...existing, allocations: [...existingAllocs, allocation] }
-      return { project: { ...s.project, items: replaceItem(s.project.items, itemId, updated) } }
+      return { past: pushHistory(s), project: { ...s.project, items: replaceItem(s.project.items, itemId, updated) } }
     }),
 
   removeAllocation: (itemId, resourceId) =>
@@ -315,11 +339,11 @@ export const usePlanningStore = create<PlanningState>((set, get) => ({
       const existing = findItem(s.project.items, itemId)
       if (!existing || existing.type === 'group') return s
       const updated = { ...existing, allocations: existing.allocations.filter((a) => a.resourceId !== resourceId) }
-      return { project: { ...s.project, items: replaceItem(s.project.items, itemId, updated) } }
+      return { past: pushHistory(s), project: { ...s.project, items: replaceItem(s.project.items, itemId, updated) } }
     }),
 
   updateCalendar: (patch) =>
-    set((s) => ({ project: { ...s.project, calendar: { ...s.project.calendar, ...patch } } })),
+    set((s) => ({ past: pushHistory(s), project: { ...s.project, calendar: { ...s.project.calendar, ...patch } } })),
 
   confirmReschedule: () =>
     set((s) => {
@@ -336,7 +360,18 @@ export const usePlanningStore = create<PlanningState>((set, get) => ({
     set((s) => {
       const pending = s.pendingReschedule
       if (!pending) return s
-      return { project: pending.snapshot, pendingReschedule: null }
+      // The seed action pushed a history entry before applying its edit; since
+      // we're reverting that edit entirely, drop the matching history entry too
+      // so undo doesn't surface a stale snapshot identical to the current state.
+      const past = s.past.length > 0 ? s.past.slice(0, -1) : s.past
+      return { project: pending.snapshot, pendingReschedule: null, past }
+    }),
+
+  undo: () =>
+    set((s) => {
+      if (s.past.length === 0) return s
+      const previous = s.past[s.past.length - 1]!
+      return { project: previous, past: s.past.slice(0, -1), pendingReschedule: null }
     }),
 
   importJSON: (text) => {
@@ -345,7 +380,7 @@ export const usePlanningStore = create<PlanningState>((set, get) => ({
       set({ importError: result.error })
       return false
     }
-    set({ project: result.project, importError: null, pendingReschedule: null, selectedItemId: null, expandedItemIds: new Set(), editorRowHeights: new Map() })
+    set({ project: result.project, past: [], importError: null, pendingReschedule: null, selectedItemId: null, expandedItemIds: new Set(), editorRowHeights: new Map() })
     return true
   },
 
@@ -354,11 +389,11 @@ export const usePlanningStore = create<PlanningState>((set, get) => ({
   exportStandaloneHTML: () => buildStandaloneHTML(get().project),
 
   loadProject: (project) =>
-    set({ project, pendingReschedule: null, selectedItemId: null, expandedItemIds: new Set(), editorRowHeights: new Map(), importError: null }),
+    set({ project, past: [], pendingReschedule: null, selectedItemId: null, expandedItemIds: new Set(), editorRowHeights: new Map(), importError: null }),
 
-  loadDemo: () => set({ project: buildDemoProject(), pendingReschedule: null, selectedItemId: null, expandedItemIds: new Set(), editorRowHeights: new Map() }),
+  loadDemo: () => set({ project: buildDemoProject(), past: [], pendingReschedule: null, selectedItemId: null, expandedItemIds: new Set(), editorRowHeights: new Map() }),
 
-  resetProject: () => set({ project: emptyProject(), pendingReschedule: null, selectedItemId: null, expandedItemIds: new Set(), editorRowHeights: new Map() }),
+  resetProject: () => set({ project: emptyProject(), past: [], pendingReschedule: null, selectedItemId: null, expandedItemIds: new Set(), editorRowHeights: new Map() }),
 }))
 
 function applyBoundsChange(items: PlanningItem[], change: RescheduleChange): PlanningItem[] {
